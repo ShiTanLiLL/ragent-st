@@ -17,7 +17,7 @@
     </properties>
 
     <dependencies>
-        <!-- 第 1 课马上要先写测试；此时唯一有现实用途的第三方依赖。 -->
+        <!-- 课程持续用测试驱动业务演化；目前唯一有现实用途的第三方依赖。 -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
