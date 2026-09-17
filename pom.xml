@@ -13,11 +13,19 @@
     <properties>
         <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <jackson.version>2.22.2</jackson.version>
         <junit.version>5.12.2</junit.version>
     </properties>
 
     <dependencies>
-        <!-- 课程持续用测试驱动业务演化；目前唯一有现实用途的第三方依赖。 -->
+        <!-- OpenAI 接口使用 JSON 传递请求和响应，Jackson 负责可靠地读写 JSON。 -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+
+        <!-- 课程持续用测试驱动业务演化。 -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
