@@ -2,9 +2,14 @@ package com.shitan.ai;
 
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
 import java.util.List;
@@ -17,6 +22,7 @@ import java.util.List;
 public class QuestionController {
 
     private final BailianRagAssistant assistant;
+    private final StreamingQuestionService streamingQuestionService;
     private final List<KnowledgeEntry> knowledgeEntries = List.of(
             new KnowledgeEntry(
                     "退货政策",
@@ -33,10 +39,15 @@ public class QuestionController {
     /**
      * 保存 Spring 注入的 RAG 助手，后续每个 HTTP 请求都复用同一个助手对象。
      *
-     * @param assistant 已经连接百炼客户端的 RAG 助手
+     * @param assistant                已经连接百炼客户端的 RAG 助手
+     * @param streamingQuestionService 负责后台生成、SSE 发送和取消状态的流式服务
      */
-    public QuestionController(BailianRagAssistant assistant) {
+    public QuestionController(
+            BailianRagAssistant assistant,
+            StreamingQuestionService streamingQuestionService
+    ) {
         this.assistant = assistant;
+        this.streamingQuestionService = streamingQuestionService;
     }
 
     /**
@@ -52,5 +63,30 @@ public class QuestionController {
             throws IOException, InterruptedException {
         KnowledgeAnswer answer = assistant.answer(request.question(), knowledgeEntries);
         return new QuestionResponse(answer.content(), answer.sourceTitle());
+    }
+
+    /**
+     * 创建一次流式问答，立即返回 SSE 连接，后续由后台线程依次发送 meta、message 和 done。
+     *
+     * @param request 已通过非空校验的用户问题
+     * @return 保持打开、可以逐条向调用方发送事件的 SSE 连接
+     */
+    @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter stream(@Valid @RequestBody QuestionRequest request) {
+        return streamingQuestionService.start(request.question(), knowledgeEntries);
+    }
+
+    /**
+     * 根据 meta 事件中的 taskId 取消仍在运行的流式问答。
+     *
+     * @param taskId 要取消的任务编号
+     * @return 找到运行任务时返回 204，任务已经结束或不存在时返回 404
+     */
+    @DeleteMapping("/stream/{taskId}")
+    public ResponseEntity<Void> cancel(@PathVariable("taskId") String taskId) {
+        if (streamingQuestionService.cancel(taskId)) {
+            return ResponseEntity.noContent().build();
+        }
+        return ResponseEntity.notFound().build();
     }
 }

@@ -4,6 +4,9 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 /**
  * 教学项目的启动入口，负责启动 Spring 容器和内置 Web 服务器。
  */
@@ -38,5 +41,15 @@ public class RagentApplication {
     @Bean
     BailianRagAssistant bailianRagAssistant(BailianClient bailianClient) {
         return new BailianRagAssistant(bailianClient);
+    }
+
+    /**
+     * 创建流式问答使用的后台线程池，使 HTTP 请求线程可以先把 SSE 连接交还给 Spring。
+     *
+     * @return 最多同时执行四个模型流式任务的线程池；应用关闭时由 Spring 调用 shutdown
+     */
+    @Bean(destroyMethod = "shutdown")
+    ExecutorService streamExecutor() {
+        return Executors.newFixedThreadPool(4);
     }
 }

@@ -6,11 +6,17 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 /**
  * 直接调用阿里云百炼的 OpenAI 兼容 Embeddings 与 Chat Completions 接口。
@@ -97,6 +103,114 @@ public final class BailianClient {
             throw new IllegalStateException("Chat Completions 响应中没有回答文字");
         }
         return content.asText();
+    }
+
+    /**
+     * 请求百炼以 OpenAI SSE 格式增量生成答案，并把每个 delta.content 立即交给调用方。
+     *
+     * @param question  用户问题
+     * @param evidence  本地向量检索选出的证据
+     * @param onChunk   接收每一段新增回答文字的函数
+     * @param cancelled 用于在用户取消后停止读取模型流
+     * @throws IOException          网络、SSE 读取或 JSON 解析失败
+     * @throws InterruptedException 等待百炼建立流式响应时线程被中断
+     */
+    public void streamAnswer(
+            String question,
+            KnowledgeEntry evidence,
+            Consumer<String> onChunk,
+            BooleanSupplier cancelled
+    ) throws IOException, InterruptedException {
+        if (cancelled.getAsBoolean()) {
+            return;
+        }
+
+        ObjectNode requestBody = objectMapper.createObjectNode();
+        requestBody.put("model", CHAT_MODEL);
+        requestBody.put("stream", true);
+
+        ArrayNode messages = requestBody.putArray("messages");
+        messages.addObject()
+                .put("role", "system")
+                .put("content", "你是企业知识助手。只能根据提供的证据回答；证据不足时必须明确说不知道。");
+        messages.addObject()
+                .put("role", "user")
+                .put(
+                        "content",
+                        "问题：" + question
+                                + "\n\n证据标题：" + evidence.title()
+                                + "\n证据正文：" + evidence.content()
+                );
+        requestBody.put("max_tokens", 300);
+
+        String jsonText = objectMapper.writeValueAsString(requestBody);
+        HttpRequest request = HttpRequest.newBuilder(baseUri.resolve("chat/completions"))
+                .timeout(Duration.ofSeconds(120))
+                .header("Authorization", "Bearer " + apiKey)
+                .header("Content-Type", "application/json")
+                .header("Accept", "text/event-stream")
+                .POST(HttpRequest.BodyPublishers.ofString(jsonText))
+                .build();
+
+        HttpResponse<InputStream> response = httpClient.send(
+                request,
+                HttpResponse.BodyHandlers.ofInputStream()
+        );
+
+        try (InputStream responseBody = response.body()) {
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                String errorBody = new String(responseBody.readAllBytes(), StandardCharsets.UTF_8);
+                throw new IllegalStateException(
+                        "百炼流式请求失败，HTTP 状态码：" + response.statusCode()
+                                + "，响应：" + errorBody
+                );
+            }
+
+            readChatStream(responseBody, onChunk, cancelled);
+        }
+    }
+
+    /**
+     * 逐行读取百炼 SSE：忽略空行，解析 data 后的 JSON，并取出 choices[0].delta.content。
+     *
+     * @param responseBody 百炼尚未一次性读完的响应流
+     * @param onChunk      接收新增回答片段的函数
+     * @param cancelled    用户取消状态
+     * @throws IOException 读取响应流或解析某一行 JSON 失败
+     */
+    private void readChatStream(
+            InputStream responseBody,
+            Consumer<String> onChunk,
+            BooleanSupplier cancelled
+    ) throws IOException {
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(responseBody, StandardCharsets.UTF_8)
+        )) {
+            String line;
+            while (!cancelled.getAsBoolean() && (line = reader.readLine()) != null) {
+                if (!line.startsWith("data:")) {
+                    continue;
+                }
+
+                String data = line.substring("data:".length()).trim();
+                if ("[DONE]".equals(data)) {
+                    return;
+                }
+
+                JsonNode content = objectMapper.readTree(data)
+                        .path("choices")
+                        .path(0)
+                        .path("delta")
+                        .path("content");
+                if (content.isTextual() && !content.asText().isEmpty()) {
+                    onChunk.accept(content.asText());
+                }
+            }
+        }
+
+        if (!cancelled.getAsBoolean()) {
+            throw new IOException("百炼流式响应在 [DONE] 之前结束");
+        }
     }
 
     private JsonNode postJson(String path, JsonNode requestBody)
