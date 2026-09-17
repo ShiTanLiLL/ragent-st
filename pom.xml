@@ -14,22 +14,46 @@
         <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <jackson.version>2.22.2</jackson.version>
-        <junit.version>5.12.2</junit.version>
+        <spring-boot.version>4.1.1</spring-boot.version>
     </properties>
 
+    <dependencyManagement>
+        <dependencies>
+            <!-- 由 Spring Boot 统一管理 Spring Web、Validation 和测试组件的兼容版本。 -->
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
     <dependencies>
-        <!-- OpenAI 接口使用 JSON 传递请求和响应，Jackson 负责可靠地读写 JSON。 -->
+        <!-- 当前需求需要真实 HTTP 入口；它会带来 Spring MVC 和内置 Tomcat。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc</artifactId>
+        </dependency>
+
+        <!-- 用 @NotBlank 和 @Valid 在进入模型之前拒绝空问题。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- 百炼的 OpenAI 兼容接口使用 JSON，Jackson 负责可靠地读写模型协议。 -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
             <version>${jackson.version}</version>
         </dependency>
 
-        <!-- 课程持续用测试驱动业务演化。 -->
+        <!-- 启动真实 Spring 应用和随机端口 Web 服务器进行完整链路测试。 -->
         <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter</artifactId>
-            <version>${junit.version}</version>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -45,6 +69,11 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.5.6</version>
+            </plugin>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <version>${spring-boot.version}</version>
             </plugin>
         </plugins>
     </build>
