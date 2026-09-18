@@ -1,10 +1,13 @@
 package com.shitan.ai;
 
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.HttpStatus;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import java.util.NoSuchElementException;
 
 /**
  * 把当前已经出现的参数校验异常转换成稳定、易懂的 HTTP 错误响应。
@@ -26,5 +29,17 @@ public class ApiExceptionHandler {
                 : firstError.getDefaultMessage();
 
         return ResponseEntity.badRequest().body(new ApiError(message));
+    }
+
+    /**
+     * 把不存在的知识库或文档转换成 HTTP 404，让调用方区分“编号不存在”和“服务故障”。
+     *
+     * @param exception 知识管理服务提供的明确不存在原因
+     * @return 状态码为 404、正文包含具体原因的响应
+     */
+    @ExceptionHandler(NoSuchElementException.class)
+    public ResponseEntity<ApiError> handleNotFound(NoSuchElementException exception) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(new ApiError(exception.getMessage()));
     }
 }

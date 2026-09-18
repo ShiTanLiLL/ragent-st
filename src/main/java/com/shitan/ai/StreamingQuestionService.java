@@ -56,6 +56,28 @@ public class StreamingQuestionService {
     }
 
     /**
+     * 为已经在上传阶段建立向量索引的知识创建流式任务，后台只再向量化用户问题。
+     *
+     * @param question   用户问题
+     * @param candidates 已带向量的知识片段
+     * @return 已经发送 meta、随后会收到 message 与 done 的 SSE 连接
+     */
+    public SseEmitter startFromIndex(
+            String question,
+            List<EmbeddedKnowledge> candidates
+    ) {
+        String taskId = UUID.randomUUID().toString();
+        SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MILLIS);
+        ActiveStream activeStream = new ActiveStream(taskId, emitter);
+
+        runningStreams.put(taskId, activeStream);
+        activeStream.sendMeta();
+        streamExecutor.submit(() -> runIndexedStream(question, candidates, activeStream));
+
+        return emitter;
+    }
+
+    /**
      * 请求取消指定任务，并立刻向仍连接的调用方发送 cancelled=true 的 done 事件。
      *
      * @param taskId meta 事件提供的任务编号
@@ -87,6 +109,37 @@ public class StreamingQuestionService {
             String sourceTitle = assistant.streamAnswer(
                     question,
                     knowledgeEntries,
+                    activeStream::sendMessage,
+                    activeStream::isCancelled
+            );
+            if (!activeStream.isCancelled()) {
+                activeStream.complete(sourceTitle);
+            }
+        } catch (Exception exception) {
+            if (!activeStream.isCancelled()) {
+                activeStream.fail(exception);
+            }
+        } finally {
+            runningStreams.remove(activeStream.taskId(), activeStream);
+        }
+    }
+
+    /**
+     * 在后台使用现成向量索引执行 RAG，并沿用与原流式任务相同的成功、失败和取消收尾。
+     *
+     * @param question     用户问题
+     * @param candidates   上传阶段已经生成好向量的知识片段
+     * @param activeStream 本次任务的发送器和并发状态
+     */
+    private void runIndexedStream(
+            String question,
+            List<EmbeddedKnowledge> candidates,
+            ActiveStream activeStream
+    ) {
+        try {
+            String sourceTitle = assistant.streamAnswerFromIndex(
+                    question,
+                    candidates,
                     activeStream::sendMessage,
                     activeStream::isCancelled
             );

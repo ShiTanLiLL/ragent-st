@@ -14,10 +14,24 @@ public final class BailianRagAssistant {
     private final BailianClient bailianClient;
     private final VectorSearch vectorSearch = new VectorSearch();
 
+    /**
+     * 保存具体百炼客户端，后续由助手统一安排向量化、检索和生成顺序。
+     *
+     * @param bailianClient 负责真实模型 HTTP 协议的客户端
+     */
     public BailianRagAssistant(BailianClient bailianClient) {
         this.bailianClient = bailianClient;
     }
 
+    /**
+     * 为尚未建立索引的知识逐条生成向量，再执行问题检索和回答；保留给前几课内置知识使用。
+     *
+     * @param question         用户问题
+     * @param knowledgeEntries 尚未带向量的知识列表
+     * @return 模型回答及检索命中的来源标题
+     * @throws IOException          百炼网络通信或响应解析失败
+     * @throws InterruptedException 等待百炼响应期间当前线程被中断
+     */
     public KnowledgeAnswer answer(String question, List<KnowledgeEntry> knowledgeEntries)
             throws IOException, InterruptedException {
         if (knowledgeEntries.isEmpty()) {
@@ -31,6 +45,26 @@ public final class BailianRagAssistant {
             String textForEmbedding = knowledge.title() + "\n" + knowledge.content();
             double[] vector = bailianClient.createEmbedding(textForEmbedding);
             candidates.add(new EmbeddedKnowledge(knowledge, vector));
+        }
+
+        return answerFromIndex(question, candidates);
+    }
+
+    /**
+     * 使用上传阶段已经建立好的知识向量，只为当前问题生成一次向量并完成检索与回答。
+     *
+     * @param question   用户问题
+     * @param candidates 已经带向量的知识片段
+     * @return 模型生成的回答及本地检索选中的来源标题
+     * @throws IOException          百炼网络通信或响应解析失败
+     * @throws InterruptedException 等待百炼响应期间当前线程被中断
+     */
+    public KnowledgeAnswer answerFromIndex(
+            String question,
+            List<EmbeddedKnowledge> candidates
+    ) throws IOException, InterruptedException {
+        if (candidates.isEmpty()) {
+            return new KnowledgeAnswer("暂时没有找到相关知识。", null);
         }
 
         double[] questionVector = bailianClient.createEmbedding(question);
@@ -72,11 +106,35 @@ public final class BailianRagAssistant {
             candidates.add(new EmbeddedKnowledge(knowledge, vector));
         }
 
-        if (cancelled.getAsBoolean()) {
+        return streamAnswerFromIndex(question, candidates, onChunk, cancelled);
+    }
+
+    /**
+     * 使用上传时保存的知识向量执行流式问答，避免每次提问重复向量化全部片段。
+     *
+     * @param question   用户问题
+     * @param candidates 已经带向量的知识片段
+     * @param onChunk    每得到一段新增回答文字时执行的回调
+     * @param cancelled  每到工作关口查询最新取消状态的函数
+     * @return 实际使用的证据标题；取消或没有知识时返回 null
+     * @throws IOException          百炼网络通信或响应解析失败
+     * @throws InterruptedException 等待百炼响应时后台线程被中断
+     */
+    public String streamAnswerFromIndex(
+            String question,
+            List<EmbeddedKnowledge> candidates,
+            Consumer<String> onChunk,
+            BooleanSupplier cancelled
+    ) throws IOException, InterruptedException {
+        if (candidates.isEmpty() || cancelled.getAsBoolean()) {
             return null;
         }
 
         double[] questionVector = bailianClient.createEmbedding(question);
+        if (cancelled.getAsBoolean()) {
+            return null;
+        }
+
         KnowledgeEntry evidence = vectorSearch.search(questionVector, candidates, 1).get(0);
         bailianClient.streamAnswer(question, evidence, onChunk, cancelled);
 

@@ -23,6 +23,7 @@ public class QuestionController {
 
     private final BailianRagAssistant assistant;
     private final StreamingQuestionService streamingQuestionService;
+    private final KnowledgeManagementService knowledgeManagementService;
     private final List<KnowledgeEntry> knowledgeEntries = List.of(
             new KnowledgeEntry(
                     "退货政策",
@@ -41,13 +42,16 @@ public class QuestionController {
      *
      * @param assistant                已经连接百炼客户端的 RAG 助手
      * @param streamingQuestionService 负责后台生成、SSE 发送和取消状态的流式服务
+     * @param knowledgeManagementService 保存上传文档和已建立向量索引的知识服务
      */
     public QuestionController(
             BailianRagAssistant assistant,
-            StreamingQuestionService streamingQuestionService
+            StreamingQuestionService streamingQuestionService,
+            KnowledgeManagementService knowledgeManagementService
     ) {
         this.assistant = assistant;
         this.streamingQuestionService = streamingQuestionService;
+        this.knowledgeManagementService = knowledgeManagementService;
     }
 
     /**
@@ -61,7 +65,15 @@ public class QuestionController {
     @PostMapping
     public QuestionResponse ask(@Valid @RequestBody QuestionRequest request)
             throws IOException, InterruptedException {
-        KnowledgeAnswer answer = assistant.answer(request.question(), knowledgeEntries);
+        KnowledgeAnswer answer;
+        if (hasUploadedKnowledgeBase(request)) {
+            List<EmbeddedKnowledge> indexed = knowledgeManagementService.indexedKnowledge(
+                    request.knowledgeBaseId()
+            );
+            answer = assistant.answerFromIndex(request.question(), indexed);
+        } else {
+            answer = assistant.answer(request.question(), knowledgeEntries);
+        }
         return new QuestionResponse(answer.content(), answer.sourceTitle());
     }
 
@@ -73,6 +85,12 @@ public class QuestionController {
      */
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream(@Valid @RequestBody QuestionRequest request) {
+        if (hasUploadedKnowledgeBase(request)) {
+            List<EmbeddedKnowledge> indexed = knowledgeManagementService.indexedKnowledge(
+                    request.knowledgeBaseId()
+            );
+            return streamingQuestionService.startFromIndex(request.question(), indexed);
+        }
         return streamingQuestionService.start(request.question(), knowledgeEntries);
     }
 
@@ -88,5 +106,15 @@ public class QuestionController {
             return ResponseEntity.noContent().build();
         }
         return ResponseEntity.notFound().build();
+    }
+
+    /**
+     * 判断本次请求是查询运营人员上传的知识库，还是沿用前几课的内置政策。
+     *
+     * @param request 已完成 JSON 反序列化的问答请求
+     * @return knowledgeBaseId 存在且不是空白文字时返回 true
+     */
+    private boolean hasUploadedKnowledgeBase(QuestionRequest request) {
+        return request.knowledgeBaseId() != null && !request.knowledgeBaseId().isBlank();
     }
 }
