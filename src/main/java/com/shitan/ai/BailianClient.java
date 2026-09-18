@@ -24,6 +24,7 @@ import java.util.function.Consumer;
 public final class BailianClient {
 
     private static final String EMBEDDING_MODEL = "text-embedding-v4";
+    private static final int EMBEDDING_DIMENSIONS = 1024;
     private static final String CHAT_MODEL = "qwen-plus-latest";
     private static final URI BAILIAN_BASE_URI =
             URI.create("https://dashscope.aliyuncs.com/compatible-mode/v1/");
@@ -53,11 +54,21 @@ public final class BailianClient {
         return new BailianClient(System.getenv("DASHSCOPE_API_KEY"), BAILIAN_BASE_URI);
     }
 
+    /**
+     * 请求百炼把一段文本转换成固定 1024 维向量，与 PostgreSQL vector(1024) 列保持一致。
+     *
+     * @param text 要表示成语义向量的文本
+     * @return 按百炼响应顺序复制出的 1024 维 Java 数组
+     * @throws IOException          网络通信或 JSON 解析失败
+     * @throws InterruptedException 等待百炼响应时当前线程被中断
+     */
     public double[] createEmbedding(String text) throws IOException, InterruptedException {
         // 对应请求 JSON：{"model":"text-embedding-v4","input":"要向量化的文字"}
         ObjectNode requestBody = objectMapper.createObjectNode();
         requestBody.put("model", EMBEDDING_MODEL);
         requestBody.put("input", text);
+        // 数据库列固定为 vector(1024)，所以请求中也明确维度，不依赖模型默认值。
+        requestBody.put("dimensions", EMBEDDING_DIMENSIONS);
 
         JsonNode responseBody = postJson("embeddings", requestBody);
 

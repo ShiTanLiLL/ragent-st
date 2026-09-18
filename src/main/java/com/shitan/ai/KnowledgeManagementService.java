@@ -13,33 +13,32 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 管理当前进程中的知识库、文档、片段和向量索引，并把上传原文件保存到本地目录。
+ * 管理知识上传流程：原文件仍保存到本地，业务数据和向量通过 Repository 持久化到 PostgreSQL。
  */
 @Service
 public class KnowledgeManagementService {
 
     private final BailianClient bailianClient;
+    private final KnowledgeRepository knowledgeRepository;
     private final KnowledgeFileLoader fileLoader = new KnowledgeFileLoader();
     private final Path storageRoot;
-    private final ConcurrentHashMap<String, KnowledgeBase> knowledgeBases = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, KnowledgeDocument> documents = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, List<KnowledgeChunk>> chunksByDocument =
-            new ConcurrentHashMap<>();
 
     /**
-     * 保存上传和索引所需对象；存储根目录默认是项目下的 data/uploads，测试可以单独覆盖。
+     * 保存上传、数据库持久化和本地文件存储所需对象；测试可以单独覆盖存储根目录。
      *
      * @param bailianClient 百炼客户端，用于在上传阶段生成片段向量
+     * @param knowledgeRepository 负责 PostgreSQL 文档、片段和向量读写的具体仓库
      * @param storageRoot   Spring 配置中指定的本地原文件目录
      */
     public KnowledgeManagementService(
             BailianClient bailianClient,
+            KnowledgeRepository knowledgeRepository,
             @Value("${ragent.storage-root:data/uploads}") String storageRoot
     ) {
         this.bailianClient = bailianClient;
+        this.knowledgeRepository = knowledgeRepository;
         this.storageRoot = Path.of(storageRoot).toAbsolutePath().normalize();
     }
 
@@ -52,7 +51,7 @@ public class KnowledgeManagementService {
     public KnowledgeBase createKnowledgeBase(String name) {
         String id = UUID.randomUUID().toString();
         KnowledgeBase knowledgeBase = new KnowledgeBase(id, name.strip());
-        knowledgeBases.put(id, knowledgeBase);
+        knowledgeRepository.insertKnowledgeBase(knowledgeBase);
         return knowledgeBase;
     }
 
@@ -82,8 +81,10 @@ public class KnowledgeManagementService {
                 0,
                 null
         );
-        documents.put(documentId, pending);
-        documents.put(documentId, changeStatus(pending, DocumentStatus.RUNNING, 0, null));
+        knowledgeRepository.saveDocument(pending);
+        knowledgeRepository.saveDocument(
+                changeStatus(pending, DocumentStatus.RUNNING, 0, null)
+        );
 
         try {
             validateTextFile(file, originalFilename);
@@ -94,15 +95,14 @@ public class KnowledgeManagementService {
                     storedFile
             );
 
-            // 只有全部 Embedding 都成功后才发布整份文档的片段，避免查询到半份索引。
-            chunksByDocument.put(documentId, List.copyOf(indexedChunks));
             KnowledgeDocument success = changeStatus(
                     pending,
                     DocumentStatus.SUCCESS,
                     indexedChunks.size(),
                     null
             );
-            documents.put(documentId, success);
+            // Repository 用一个事务同时写全部 Chunk 并更新 success，避免数据库出现半份索引。
+            knowledgeRepository.publishSuccessfulDocument(success, indexedChunks);
             return success;
         } catch (Exception exception) {
             if (exception instanceof InterruptedException) {
@@ -115,7 +115,7 @@ public class KnowledgeManagementService {
                     0,
                     readableMessage(exception)
             );
-            documents.put(documentId, failed);
+            knowledgeRepository.saveDocument(failed);
             return failed;
         }
     }
@@ -128,11 +128,8 @@ public class KnowledgeManagementService {
      * @throws NoSuchElementException 文档不存在时抛出，由 Web 层转换为 404
      */
     public KnowledgeDocument getDocument(String documentId) {
-        KnowledgeDocument document = documents.get(documentId);
-        if (document == null) {
-            throw new NoSuchElementException("文档不存在：" + documentId);
-        }
-        return document;
+        return knowledgeRepository.findDocument(documentId)
+                .orElseThrow(() -> new NoSuchElementException("文档不存在：" + documentId));
     }
 
     /**
@@ -143,27 +140,7 @@ public class KnowledgeManagementService {
      */
     public List<KnowledgeChunk> chunksOfDocument(String documentId) {
         getDocument(documentId);
-        return chunksByDocument.getOrDefault(documentId, List.of());
-    }
-
-    /**
-     * 汇总一个知识库中所有成功片段，转换成现有向量检索器可直接使用的候选数据。
-     *
-     * @param knowledgeBaseId 要查询的知识库编号
-     * @return 上传阶段已经生成好向量的候选知识
-     */
-    public List<EmbeddedKnowledge> indexedKnowledge(String knowledgeBaseId) {
-        requireKnowledgeBase(knowledgeBaseId);
-        List<EmbeddedKnowledge> indexed = new ArrayList<>();
-
-        for (List<KnowledgeChunk> documentChunks : chunksByDocument.values()) {
-            for (KnowledgeChunk chunk : documentChunks) {
-                if (knowledgeBaseId.equals(chunk.knowledgeBaseId())) {
-                    indexed.add(chunk.toEmbeddedKnowledge());
-                }
-            }
-        }
-        return List.copyOf(indexed);
+        return knowledgeRepository.findChunksByDocument(documentId);
     }
 
     /**
@@ -172,12 +149,10 @@ public class KnowledgeManagementService {
      * @param knowledgeBaseId 待检查编号
      * @return 找到的知识库
      */
-    private KnowledgeBase requireKnowledgeBase(String knowledgeBaseId) {
-        KnowledgeBase knowledgeBase = knowledgeBases.get(knowledgeBaseId);
-        if (knowledgeBase == null) {
+    private void requireKnowledgeBase(String knowledgeBaseId) {
+        if (!knowledgeRepository.knowledgeBaseExists(knowledgeBaseId)) {
             throw new NoSuchElementException("知识库不存在：" + knowledgeBaseId);
         }
-        return knowledgeBase;
     }
 
     /**
@@ -224,7 +199,7 @@ public class KnowledgeManagementService {
     }
 
     /**
-     * 用第 3 课格式读取文本块，并逐块调用百炼 Embedding 形成内存向量索引。
+     * 用第 3 课格式读取文本块，并逐块调用百炼 Embedding 形成等待事务发布的片段列表。
      *
      * @param knowledgeBaseId 所属知识库编号
      * @param documentId      来源文档编号
@@ -267,7 +242,7 @@ public class KnowledgeManagementService {
      * @param storedFile 可能已经写入的本地文件
      */
     private void cleanupFailedUpload(String documentId, Path storedFile) {
-        chunksByDocument.remove(documentId);
+        knowledgeRepository.deleteChunks(documentId);
         try {
             Files.deleteIfExists(storedFile);
         } catch (IOException ignored) {

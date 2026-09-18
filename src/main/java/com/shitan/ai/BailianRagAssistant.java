@@ -12,6 +12,7 @@ import java.util.function.Consumer;
 public final class BailianRagAssistant {
 
     private final BailianClient bailianClient;
+    private final KnowledgeRepository knowledgeRepository;
     private final VectorSearch vectorSearch = new VectorSearch();
 
     /**
@@ -20,7 +21,21 @@ public final class BailianRagAssistant {
      * @param bailianClient 负责真实模型 HTTP 协议的客户端
      */
     public BailianRagAssistant(BailianClient bailianClient) {
+        this(bailianClient, null);
+    }
+
+    /**
+     * 保存百炼客户端和 PostgreSQL 知识仓库，供正式应用执行数据库向量检索。
+     *
+     * @param bailianClient      负责 Embedding 与 Chat 的客户端
+     * @param knowledgeRepository 负责 pgvector Top-1 检索的仓库
+     */
+    public BailianRagAssistant(
+            BailianClient bailianClient,
+            KnowledgeRepository knowledgeRepository
+    ) {
         this.bailianClient = bailianClient;
+        this.knowledgeRepository = knowledgeRepository;
     }
 
     /**
@@ -47,7 +62,7 @@ public final class BailianRagAssistant {
             candidates.add(new EmbeddedKnowledge(knowledge, vector));
         }
 
-        return answerFromIndex(question, candidates);
+        return answerFromCandidatesWithVectors(question, candidates);
     }
 
     /**
@@ -59,7 +74,7 @@ public final class BailianRagAssistant {
      * @throws IOException          百炼网络通信或响应解析失败
      * @throws InterruptedException 等待百炼响应期间当前线程被中断
      */
-    public KnowledgeAnswer answerFromIndex(
+    public KnowledgeAnswer answerFromCandidatesWithVectors(
             String question,
             List<EmbeddedKnowledge> candidates
     ) throws IOException, InterruptedException {
@@ -71,6 +86,31 @@ public final class BailianRagAssistant {
         KnowledgeEntry evidence = vectorSearch.search(questionVector, candidates, 1).get(0);
         String generatedAnswer = bailianClient.generateAnswer(question, evidence);
 
+        return new KnowledgeAnswer(generatedAnswer, evidence.title());
+    }
+
+    /**
+     * 为问题生成向量，让 PostgreSQL pgvector 选出 Top-1 证据，再调用聊天模型生成回答。
+     *
+     * @param question        用户问题
+     * @param knowledgeBaseId 要检索的持久化知识库编号
+     * @return 模型回答及数据库检索命中的来源标题
+     * @throws IOException          百炼网络通信或响应解析失败
+     * @throws InterruptedException 等待百炼响应期间当前线程被中断
+     */
+    public KnowledgeAnswer answerFromDatabase(
+            String question,
+            String knowledgeBaseId
+    ) throws IOException, InterruptedException {
+        KnowledgeRepository repository = requireKnowledgeRepository();
+        double[] questionVector = bailianClient.createEmbedding(question);
+        KnowledgeEntry evidence = repository.searchTopOne(knowledgeBaseId, questionVector)
+                .orElse(null);
+        if (evidence == null) {
+            return new KnowledgeAnswer("暂时没有找到相关知识。", null);
+        }
+
+        String generatedAnswer = bailianClient.generateAnswer(question, evidence);
         return new KnowledgeAnswer(generatedAnswer, evidence.title());
     }
 
@@ -106,7 +146,7 @@ public final class BailianRagAssistant {
             candidates.add(new EmbeddedKnowledge(knowledge, vector));
         }
 
-        return streamAnswerFromIndex(question, candidates, onChunk, cancelled);
+        return streamAnswerFromCandidatesWithVectors(question, candidates, onChunk, cancelled);
     }
 
     /**
@@ -120,7 +160,7 @@ public final class BailianRagAssistant {
      * @throws IOException          百炼网络通信或响应解析失败
      * @throws InterruptedException 等待百炼响应时后台线程被中断
      */
-    public String streamAnswerFromIndex(
+    public String streamAnswerFromCandidatesWithVectors(
             String question,
             List<EmbeddedKnowledge> candidates,
             Consumer<String> onChunk,
@@ -139,5 +179,54 @@ public final class BailianRagAssistant {
         bailianClient.streamAnswer(question, evidence, onChunk, cancelled);
 
         return cancelled.getAsBoolean() ? null : evidence.title();
+    }
+
+    /**
+     * 流式回答持久化知识库问题：生成问题向量、由 pgvector 检索证据，再流式调用 Chat。
+     *
+     * @param question        用户问题
+     * @param knowledgeBaseId 持久化知识库编号
+     * @param onChunk         接收每段新增回答文字的回调
+     * @param cancelled       查询最新取消状态的函数
+     * @return 实际使用的证据标题；取消或没有知识时返回 null
+     * @throws IOException          百炼网络通信或响应解析失败
+     * @throws InterruptedException 等待百炼响应期间当前线程被中断
+     */
+    public String streamAnswerFromDatabase(
+            String question,
+            String knowledgeBaseId,
+            Consumer<String> onChunk,
+            BooleanSupplier cancelled
+    ) throws IOException, InterruptedException {
+        if (cancelled.getAsBoolean()) {
+            return null;
+        }
+
+        KnowledgeRepository repository = requireKnowledgeRepository();
+        double[] questionVector = bailianClient.createEmbedding(question);
+        if (cancelled.getAsBoolean()) {
+            return null;
+        }
+
+        KnowledgeEntry evidence = repository.searchTopOne(knowledgeBaseId, questionVector)
+                .orElse(null);
+        if (evidence == null || cancelled.getAsBoolean()) {
+            return null;
+        }
+
+        bailianClient.streamAnswer(question, evidence, onChunk, cancelled);
+        return cancelled.getAsBoolean() ? null : evidence.title();
+    }
+
+    /**
+     * 返回正式应用注入的数据库仓库，旧单元测试误调数据库路径时给出直接错误。
+     *
+     * @return PostgreSQL 知识仓库
+     */
+    private KnowledgeRepository requireKnowledgeRepository() {
+        if (knowledgeRepository == null) {
+            throw new IllegalStateException("当前 RAG 助手没有配置知识数据库");
+        }
+        return knowledgeRepository;
     }
 }

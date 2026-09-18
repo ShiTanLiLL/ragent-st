@@ -35,12 +35,16 @@ public class RagentApplication {
     /**
      * 创建 Web 层实际使用的 RAG 助手，并把同一个百炼客户端交给它。
      *
-     * @param bailianClient Spring 容器中已经创建的百炼客户端
+     * @param bailianClient       Spring 容器中已经创建的百炼客户端
+     * @param knowledgeRepository 保存知识并执行 pgvector 检索的 PostgreSQL 仓库
      * @return 能执行“向量化 → 检索 → 生成”的问答助手
      */
     @Bean
-    BailianRagAssistant bailianRagAssistant(BailianClient bailianClient) {
-        return new BailianRagAssistant(bailianClient);
+    BailianRagAssistant bailianRagAssistant(
+            BailianClient bailianClient,
+            KnowledgeRepository knowledgeRepository
+    ) {
+        return new BailianRagAssistant(bailianClient, knowledgeRepository);
     }
 
     /**

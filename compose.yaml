@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: ragent
+      POSTGRES_USER: ragent
+      POSTGRES_PASSWORD: ragent
+    ports:
+      - "5432:5432"
+    volumes:
+      - ragent-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ragent -d ragent"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  ragent-postgres-data:
+    name: ragent-st-postgres-data

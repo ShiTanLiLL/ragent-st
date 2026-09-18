@@ -56,15 +56,15 @@ public class StreamingQuestionService {
     }
 
     /**
-     * 为已经在上传阶段建立向量索引的知识创建流式任务，后台只再向量化用户问题。
+     * 为 PostgreSQL 中已经持久化的知识创建流式任务，后台只再向量化问题并查询 pgvector。
      *
-     * @param question   用户问题
-     * @param candidates 已带向量的知识片段
+     * @param question        用户问题
+     * @param knowledgeBaseId 要查询的持久化知识库编号
      * @return 已经发送 meta、随后会收到 message 与 done 的 SSE 连接
      */
-    public SseEmitter startFromIndex(
+    public SseEmitter startFromDatabase(
             String question,
-            List<EmbeddedKnowledge> candidates
+            String knowledgeBaseId
     ) {
         String taskId = UUID.randomUUID().toString();
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MILLIS);
@@ -72,7 +72,7 @@ public class StreamingQuestionService {
 
         runningStreams.put(taskId, activeStream);
         activeStream.sendMeta();
-        streamExecutor.submit(() -> runIndexedStream(question, candidates, activeStream));
+        streamExecutor.submit(() -> runDatabaseStream(question, knowledgeBaseId, activeStream));
 
         return emitter;
     }
@@ -125,21 +125,21 @@ public class StreamingQuestionService {
     }
 
     /**
-     * 在后台使用现成向量索引执行 RAG，并沿用与原流式任务相同的成功、失败和取消收尾。
+     * 在后台使用 PostgreSQL 向量检索执行 RAG，并沿用原流式任务的成功、失败和取消收尾。
      *
-     * @param question     用户问题
-     * @param candidates   上传阶段已经生成好向量的知识片段
-     * @param activeStream 本次任务的发送器和并发状态
+     * @param question        用户问题
+     * @param knowledgeBaseId 要查询的持久化知识库编号
+     * @param activeStream    本次任务的发送器和并发状态
      */
-    private void runIndexedStream(
+    private void runDatabaseStream(
             String question,
-            List<EmbeddedKnowledge> candidates,
+            String knowledgeBaseId,
             ActiveStream activeStream
     ) {
         try {
-            String sourceTitle = assistant.streamAnswerFromIndex(
+            String sourceTitle = assistant.streamAnswerFromDatabase(
                     question,
-                    candidates,
+                    knowledgeBaseId,
                     activeStream::sendMessage,
                     activeStream::isCancelled
             );
