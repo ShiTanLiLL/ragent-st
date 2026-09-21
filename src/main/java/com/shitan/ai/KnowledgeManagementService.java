@@ -7,6 +7,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -96,6 +97,49 @@ public class KnowledgeManagementService {
             deleteStoredFile(storedFile);
             throw exception;
         }
+    }
+
+    /**
+     * 为远程地址预先登记 pending 文档；此时只保存归属和目标路径，不在请求线程下载正文。
+     *
+     * @param knowledgeBaseId 远程文档所属知识库编号
+     * @param sourceUri       运营人员提交的 HTTP 地址
+     * @return 等待后台 fetch 节点填充原文的文档
+     */
+    public KnowledgeDocument prepareRemote(String knowledgeBaseId, URI sourceUri) {
+        requireKnowledgeBase(knowledgeBaseId);
+
+        String documentId = UUID.randomUUID().toString();
+        String originalFilename = filenameFromUri(sourceUri);
+        validateSupportedFilename(originalFilename);
+        Path storedFile = storageRoot.resolve(knowledgeBaseId).resolve(documentId + ".source");
+        KnowledgeDocument pending = new KnowledgeDocument(
+                documentId,
+                knowledgeBaseId,
+                originalFilename,
+                storedFile.toString(),
+                DocumentStatus.PENDING,
+                0,
+                null
+        );
+        knowledgeRepository.saveDocument(pending);
+        return pending;
+    }
+
+    /**
+     * 把 fetch 节点下载到的字节保存到预先分配的安全路径，供后续 parse 节点读取。
+     *
+     * @param document 已登记、带系统生成路径的文档
+     * @param content  远程服务器返回的原始字节
+     * @throws IOException 创建目录或写文件失败
+     */
+    public void saveFetchedContent(KnowledgeDocument document, byte[] content) throws IOException {
+        if (content.length == 0) {
+            throw new IllegalArgumentException("远程文档内容为空");
+        }
+        Path storedFile = Path.of(document.storedPath());
+        Files.createDirectories(storedFile.getParent());
+        Files.write(storedFile, content);
     }
 
     /**
@@ -246,18 +290,41 @@ public class KnowledgeManagementService {
     }
 
     /**
+     * 从 URL 路径最后一段取得展示文件名；没有路径时使用明确的 Markdown 默认名。
+     *
+     * @param sourceUri 经过 URI 语法校验的远程地址
+     * @return 不包含目录的文件名
+     */
+    private String filenameFromUri(URI sourceUri) {
+        String path = sourceUri.getPath();
+        if (path == null || path.isBlank() || path.endsWith("/")) {
+            return "remote.md";
+        }
+        return normalizeFilename(path);
+    }
+
+    /**
      * 在落盘和调用百炼之前拒绝空文件及本课暂不支持的非文本格式。
      *
      * @param file             上传文件
      * @param originalFilename 已清理路径部分的文件名
      */
     private void validateTextFile(MultipartFile file, String originalFilename) {
-        String lowerName = originalFilename.toLowerCase();
         if (file.isEmpty()) {
             throw new IllegalArgumentException("上传文件不能为空");
         }
+        validateSupportedFilename(originalFilename);
+    }
+
+    /**
+     * 让上传和远程来源共用本课支持的文件格式边界。
+     *
+     * @param originalFilename 用于 MIME 辅助判断的原始文件名
+     */
+    private void validateSupportedFilename(String originalFilename) {
+        String lowerName = originalFilename.toLowerCase();
         if (!lowerName.endsWith(".txt") && !lowerName.endsWith(".md")) {
-            throw new IllegalArgumentException("第 11 课当前支持 .txt 和 .md 文件");
+            throw new IllegalArgumentException("当前支持 .txt 和 .md 文件");
         }
     }
 

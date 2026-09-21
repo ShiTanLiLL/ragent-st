@@ -73,6 +73,22 @@ public class KnowledgeController {
     }
 
     /**
+     * 接收远程文档 URL，登记带 fetch 节点的后台任务并立即返回 HTTP 202。
+     *
+     * @param knowledgeBaseId URL 中的目标知识库编号
+     * @param request         已校验 url 非空的 JSON 请求
+     * @return 用于轮询进度的任务和文档编号
+     */
+    @PostMapping("/knowledge-bases/{knowledgeBaseId}/remote-documents")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public IngestionSubmission addRemoteDocument(
+            @PathVariable("knowledgeBaseId") String knowledgeBaseId,
+            @Valid @RequestBody RemoteDocumentRequest request
+    ) {
+        return ingestionTaskService.submitRemote(knowledgeBaseId, request.url());
+    }
+
+    /**
      * 查询后台摄取任务当前处于等待、运行、完成还是失败。
      *
      * @param taskId 上传接口返回的任务编号

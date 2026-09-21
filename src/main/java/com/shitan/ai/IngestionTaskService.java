@@ -4,6 +4,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.net.URI;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.UUID;
@@ -17,6 +18,7 @@ public class IngestionTaskService {
 
     private final KnowledgeManagementService knowledgeManagementService;
     private final IngestionTaskRepository taskRepository;
+    private final IngestionPipelineRunner pipelineRunner;
     private final Executor ingestionExecutor;
 
     /**
@@ -24,15 +26,18 @@ public class IngestionTaskService {
      *
      * @param knowledgeManagementService 负责文件、文档、Embedding 和 Chunk 发布
      * @param taskRepository              负责保存任务及阶段状态
+     * @param pipelineRunner              按任务选定流程逐节点执行和记录日志
      * @param ingestionExecutor           专门执行摄取任务的后台线程池
      */
     public IngestionTaskService(
             KnowledgeManagementService knowledgeManagementService,
             IngestionTaskRepository taskRepository,
+            IngestionPipelineRunner pipelineRunner,
             @Qualifier("ingestionExecutor") Executor ingestionExecutor
     ) {
         this.knowledgeManagementService = knowledgeManagementService;
         this.taskRepository = taskRepository;
+        this.pipelineRunner = pipelineRunner;
         this.ingestionExecutor = ingestionExecutor;
     }
 
@@ -51,6 +56,9 @@ public class IngestionTaskService {
         IngestionTask task = new IngestionTask(
                 UUID.randomUUID().toString(),
                 document.id(),
+                IngestionSourceType.UPLOAD,
+                document.storedPath(),
+                IngestionPipelineCatalog.UPLOAD_PIPELINE,
                 IngestionTaskStatus.PENDING,
                 null,
                 1,
@@ -61,6 +69,45 @@ public class IngestionTaskService {
         taskRepository.insert(task);
 
         // execute 只把工作交给线程池；当前 HTTP 请求不等待 Runnable 执行完。
+        ingestionExecutor.execute(() -> execute(task.id()));
+        return new IngestionSubmission(task.id(), document.id(), IngestionTaskStatus.PENDING);
+    }
+
+    /**
+     * 登记一个 URL 来源文档并选择带 fetch 的流程，然后立刻返回任务编号。
+     *
+     * @param knowledgeBaseId 远程文档所属知识库编号
+     * @param url             运营人员提交的完整 HTTP(S) 地址
+     * @return 可查询后台进度的任务和文档编号
+     */
+    public IngestionSubmission submitRemote(String knowledgeBaseId, String url) {
+        if (url == null || url.isBlank()) {
+            throw new IllegalArgumentException("远程文档地址不能为空");
+        }
+        URI sourceUri;
+        try {
+            sourceUri = URI.create(url.strip());
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalArgumentException("远程文档地址格式错误", exception);
+        }
+        KnowledgeDocument document = knowledgeManagementService.prepareRemote(
+                knowledgeBaseId,
+                sourceUri
+        );
+        IngestionTask task = new IngestionTask(
+                UUID.randomUUID().toString(),
+                document.id(),
+                IngestionSourceType.URL,
+                sourceUri.toString(),
+                IngestionPipelineCatalog.URL_PIPELINE,
+                IngestionTaskStatus.PENDING,
+                null,
+                1,
+                null,
+                null,
+                null
+        );
+        taskRepository.insert(task);
         ingestionExecutor.execute(() -> execute(task.id()));
         return new IngestionSubmission(task.id(), document.id(), IngestionTaskStatus.PENDING);
     }
@@ -110,7 +157,7 @@ public class IngestionTaskService {
     }
 
     /**
-     * 后台线程依次执行 parse、embedding、publish，并在每一阶段前后写入可查询状态。
+     * 后台线程取得任务选定的流程，再把具体节点执行和步骤日志交给流程执行器。
      *
      * <p>开头的条件 UPDATE 是最后一道并发保护：即使同一个 Runnable 被重复提交，
      * 也只有一个线程能把 pending 改成 running。</p>
@@ -123,73 +170,19 @@ public class IngestionTaskService {
         }
 
         IngestionTask task = get(taskId);
-        KnowledgeDocument document = null;
-        String activeStep = null;
-        long stepStartedAt = 0L;
 
         try {
-            document = knowledgeManagementService.markRunning(task.documentId());
-
-            activeStep = "parse";
-            stepStartedAt = System.nanoTime();
-            taskRepository.startStep(task.id(), task.attemptCount(), activeStep);
-            List<KnowledgeEntry> entries = knowledgeManagementService.parseDocument(document);
-            taskRepository.completeStep(
-                    task.id(),
-                    task.attemptCount(),
-                    activeStep,
-                    elapsedMillis(stepStartedAt)
-            );
-
-            activeStep = "embedding";
-            stepStartedAt = System.nanoTime();
-            taskRepository.startStep(task.id(), task.attemptCount(), activeStep);
-            List<KnowledgeChunk> chunks = knowledgeManagementService.createChunks(document, entries);
-            taskRepository.completeStep(
-                    task.id(),
-                    task.attemptCount(),
-                    activeStep,
-                    elapsedMillis(stepStartedAt)
-            );
-
-            activeStep = "publish";
-            stepStartedAt = System.nanoTime();
-            taskRepository.startStep(task.id(), task.attemptCount(), activeStep);
-            knowledgeManagementService.publish(document, chunks);
-            taskRepository.completeStep(
-                    task.id(),
-                    task.attemptCount(),
-                    activeStep,
-                    elapsedMillis(stepStartedAt)
-            );
-
+            KnowledgeDocument document = knowledgeManagementService.markRunning(task.documentId());
+            pipelineRunner.run(IngestionContext.start(task, document));
             taskRepository.completeTask(task.id());
         } catch (Exception exception) {
-            if (exception instanceof InterruptedException) {
+            if (exception instanceof InterruptedException
+                    || exception.getCause() instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
             String message = knowledgeManagementService.readableMessage(exception);
-            if (activeStep != null) {
-                taskRepository.failStep(
-                        task.id(),
-                        task.attemptCount(),
-                        activeStep,
-                        elapsedMillis(stepStartedAt),
-                        message
-                );
-            }
             knowledgeManagementService.markFailed(task.documentId(), message);
             taskRepository.failTask(task.id(), message);
         }
-    }
-
-    /**
-     * 把单调递增的纳秒计时转换为更适合 API 展示的毫秒耗时。
-     *
-     * @param startedAt 阶段开始时的 System.nanoTime 值
-     * @return 至少为 0 的已用毫秒数
-     */
-    private long elapsedMillis(long startedAt) {
-        return Math.max(0L, (System.nanoTime() - startedAt) / 1_000_000L);
     }
 }

@@ -43,12 +43,16 @@ public class IngestionTaskRepository {
     public void insert(IngestionTask task) {
         jdbcTemplate.update("""
                 INSERT INTO ingestion_task(
-                    id, document_id, status, current_step, attempt_count,
+                    id, document_id, source_type, source_location, pipeline_name,
+                    status, current_step, attempt_count,
                     error_message, started_at, completed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 task.id(),
                 task.documentId(),
+                task.sourceType().code(),
+                task.sourceLocation(),
+                task.pipelineName(),
                 task.status().code(),
                 task.currentStep(),
                 task.attemptCount(),
@@ -66,7 +70,8 @@ public class IngestionTaskRepository {
      */
     public Optional<IngestionTask> find(String taskId) {
         List<IngestionTask> tasks = jdbcTemplate.query("""
-                SELECT id, document_id, status, current_step, attempt_count,
+                SELECT id, document_id, source_type, source_location, pipeline_name,
+                       status, current_step, attempt_count,
                        error_message, started_at, completed_at
                 FROM ingestion_task
                 WHERE id = ?
@@ -110,9 +115,10 @@ public class IngestionTaskRepository {
      *
      * @param taskId   任务编号
      * @param attempt  当前尝试次数
-     * @param stepName 阶段名称
+     * @param stepName     阶段名称
+     * @param stepPosition 本节点在本次流程中的顺序，从 0 开始
      */
-    public void startStep(String taskId, int attempt, String stepName) {
+    public void startStep(String taskId, int attempt, String stepName, int stepPosition) {
         transactionTemplate.executeWithoutResult(status -> {
             jdbcTemplate.update(
                     "UPDATE ingestion_task SET current_step = ? WHERE id = ?",
@@ -121,10 +127,10 @@ public class IngestionTaskRepository {
             );
             jdbcTemplate.update("""
                     INSERT INTO ingestion_task_step(
-                        task_id, attempt, step_name, status,
+                        task_id, attempt, step_name, step_position, status,
                         duration_ms, error_message, started_at, completed_at
-                    ) VALUES (?, ?, ?, 'running', NULL, NULL, CURRENT_TIMESTAMP, NULL)
-                    """, taskId, attempt, stepName);
+                    ) VALUES (?, ?, ?, ?, 'running', NULL, NULL, CURRENT_TIMESTAMP, NULL)
+                    """, taskId, attempt, stepName, stepPosition);
         });
     }
 
@@ -197,7 +203,7 @@ public class IngestionTaskRepository {
     }
 
     /**
-     * 按尝试次数和固定阶段顺序返回任务日志，帮助运营人员观察每一步。
+     * 按尝试次数和 Runner 写入的节点位置返回日志，适应 upload 与 URL 的不同节点数。
      *
      * @param taskId 任务编号
      * @return 已经开始过的全部阶段
@@ -207,13 +213,7 @@ public class IngestionTaskRepository {
                 SELECT task_id, attempt, step_name, status, duration_ms, error_message
                 FROM ingestion_task_step
                 WHERE task_id = ?
-                ORDER BY attempt,
-                    CASE step_name
-                        WHEN 'parse' THEN 1
-                        WHEN 'embedding' THEN 2
-                        WHEN 'publish' THEN 3
-                        ELSE 99
-                    END
+                ORDER BY attempt, step_position
                 """, this::mapStep, taskId);
     }
 
@@ -229,6 +229,9 @@ public class IngestionTaskRepository {
         return new IngestionTask(
                 resultSet.getString("id"),
                 resultSet.getString("document_id"),
+                IngestionSourceType.fromCode(resultSet.getString("source_type")),
+                resultSet.getString("source_location"),
+                resultSet.getString("pipeline_name"),
                 IngestionTaskStatus.fromCode(resultSet.getString("status")),
                 resultSet.getString("current_step"),
                 resultSet.getInt("attempt_count"),

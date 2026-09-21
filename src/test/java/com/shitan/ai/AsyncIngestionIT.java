@@ -95,8 +95,26 @@ class AsyncIngestionIT {
                 knowledgeRepository,
                 temporaryStorage.toString()
         );
+        IngestionPipelineRunner pipelineRunner = new IngestionPipelineRunner(
+                new IngestionPipelineCatalog(),
+                taskRepository,
+                List.of(
+                        new FetchIngestionNode(
+                                new RemoteDocumentFetcher("localhost"),
+                                knowledgeService
+                        ),
+                        new ParseIngestionNode(knowledgeService),
+                        new EmbeddingIngestionNode(knowledgeService),
+                        new PublishIngestionNode(knowledgeService)
+                )
+        );
         executor = new ManualExecutor();
-        taskService = new IngestionTaskService(knowledgeService, taskRepository, executor);
+        taskService = new IngestionTaskService(
+                knowledgeService,
+                taskRepository,
+                pipelineRunner,
+                executor
+        );
     }
 
     /**

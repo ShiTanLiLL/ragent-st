@@ -5,7 +5,7 @@ package com.shitan.ai;
  *
  * @param taskId       所属任务编号
  * @param attempt      第几次尝试
- * @param stepName     parse、embedding 或 publish
+ * @param stepName     fetch、parse、embedding 或 publish
  * @param status       running、completed 或 failed
  * @param durationMs   阶段结束后的耗时毫秒数
  * @param errorMessage 本阶段失败原因

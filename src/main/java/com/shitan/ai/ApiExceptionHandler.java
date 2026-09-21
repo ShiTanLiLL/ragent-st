@@ -32,6 +32,17 @@ public class ApiExceptionHandler {
     }
 
     /**
+     * 把 URL 格式、文件格式等直接输入错误转换成 HTTP 400，而不是服务端 500。
+     *
+     * @param exception 业务入口主动拒绝的不合法值
+     * @return 状态码为 400、正文含具体原因的响应
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ApiError> handleIllegalArgument(IllegalArgumentException exception) {
+        return ResponseEntity.badRequest().body(new ApiError(exception.getMessage()));
+    }
+
+    /**
      * 把不存在的知识库或文档转换成 HTTP 404，让调用方区分“编号不存在”和“服务故障”。
      *
      * @param exception 知识管理服务提供的明确不存在原因
