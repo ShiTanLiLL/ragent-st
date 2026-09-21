@@ -56,4 +56,14 @@ public class RagentApplication {
     ExecutorService streamExecutor() {
         return Executors.newFixedThreadPool(4);
     }
+
+    /**
+     * 创建文档摄取专用线程池，使上传请求登记任务后可以立即返回 HTTP 202。
+     *
+     * @return 最多同时处理两个文档的后台线程池；应用关闭时由 Spring 调用 shutdown
+     */
+    @Bean(destroyMethod = "shutdown")
+    ExecutorService ingestionExecutor() {
+        return Executors.newFixedThreadPool(2);
+    }
 }

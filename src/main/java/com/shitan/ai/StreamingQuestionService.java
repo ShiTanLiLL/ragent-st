@@ -1,5 +1,6 @@
 package com.shitan.ai;
 
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -30,7 +31,7 @@ public class StreamingQuestionService {
      */
     public StreamingQuestionService(
             BailianRagAssistant assistant,
-            ExecutorService streamExecutor
+            @Qualifier("streamExecutor") ExecutorService streamExecutor
     ) {
         this.assistant = assistant;
         this.streamExecutor = streamExecutor;

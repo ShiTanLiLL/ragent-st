@@ -42,4 +42,16 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(new ApiError(exception.getMessage()));
     }
+
+    /**
+     * 把不允许重复执行的任务状态转换成 HTTP 409，提醒调用方先刷新任务状态。
+     *
+     * @param exception 当前任务状态不允许该操作的业务异常
+     * @return 状态码为 409、正文包含当前状态原因的响应
+     */
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<ApiError> handleStateConflict(IllegalStateException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ApiError(exception.getMessage()));
+    }
 }

@@ -23,14 +23,20 @@ import java.util.List;
 public class KnowledgeController {
 
     private final KnowledgeManagementService knowledgeManagementService;
+    private final IngestionTaskService ingestionTaskService;
 
     /**
      * 保存 Spring 注入的知识管理服务，Controller 只处理 HTTP 数据转换。
      *
-     * @param knowledgeManagementService 负责落盘、分块、向量化和状态保存的服务
+     * @param knowledgeManagementService 负责知识库、文档和片段查询的服务
+     * @param ingestionTaskService       负责登记、执行和查询后台摄取任务的服务
      */
-    public KnowledgeController(KnowledgeManagementService knowledgeManagementService) {
+    public KnowledgeController(
+            KnowledgeManagementService knowledgeManagementService,
+            IngestionTaskService ingestionTaskService
+    ) {
         this.knowledgeManagementService = knowledgeManagementService;
+        this.ingestionTaskService = ingestionTaskService;
     }
 
     /**
@@ -48,22 +54,56 @@ public class KnowledgeController {
     }
 
     /**
-     * 接收 multipart 文件，同步完成原文保存、分块和向量索引后返回最终状态。
+     * 接收 multipart 文件，保存原文并登记后台任务后立即返回 HTTP 202。
      *
      * @param knowledgeBaseId URL 中的目标知识库编号
      * @param file            multipart 中名称为 file 的文本文件
-     * @return 本次上传形成的文档及 success/failed 状态
+     * @return 用来继续查询进度的 taskId、documentId 和 pending 状态
      */
     @PostMapping(
             value = "/knowledge-bases/{knowledgeBaseId}/documents",
             consumes = MediaType.MULTIPART_FORM_DATA_VALUE
     )
-    @ResponseStatus(HttpStatus.CREATED)
-    public KnowledgeDocument upload(
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public IngestionSubmission upload(
             @PathVariable("knowledgeBaseId") String knowledgeBaseId,
             @RequestPart("file") MultipartFile file
     ) {
-        return knowledgeManagementService.upload(knowledgeBaseId, file);
+        return ingestionTaskService.submit(knowledgeBaseId, file);
+    }
+
+    /**
+     * 查询后台摄取任务当前处于等待、运行、完成还是失败。
+     *
+     * @param taskId 上传接口返回的任务编号
+     * @return 当前任务、阶段、尝试次数和错误原因
+     */
+    @GetMapping("/ingestion-tasks/{taskId}")
+    public IngestionTask getTask(@PathVariable("taskId") String taskId) {
+        return ingestionTaskService.get(taskId);
+    }
+
+    /**
+     * 查询任务每次尝试中已经开始过的阶段及耗时。
+     *
+     * @param taskId 上传接口返回的任务编号
+     * @return 按尝试次数和执行顺序排列的阶段记录
+     */
+    @GetMapping("/ingestion-tasks/{taskId}/steps")
+    public List<IngestionTaskStep> getTaskSteps(@PathVariable("taskId") String taskId) {
+        return ingestionTaskService.steps(taskId);
+    }
+
+    /**
+     * 让 failed 任务重新进入 pending；其他状态拒绝重试，避免同一文档并行处理。
+     *
+     * @param taskId 失败任务编号
+     * @return 同一个任务和文档的新一次 pending 受理结果
+     */
+    @PostMapping("/ingestion-tasks/{taskId}/retry")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public IngestionSubmission retryTask(@PathVariable("taskId") String taskId) {
+        return ingestionTaskService.retry(taskId);
     }
 
     /**

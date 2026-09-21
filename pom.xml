@@ -57,11 +57,12 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- Flyway 按版本执行 src/main/resources/db/migration 中的数据库结构变更。 -->
+        <!-- Spring Boot 4 的 Flyway Starter 同时提供迁移引擎和启动期自动配置。 -->
         <dependency>
-            <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-core</artifactId>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-flyway</artifactId>
         </dependency>
+        <!-- PostgreSQL 17 的数据库方言由 Flyway 独立模块提供。 -->
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>

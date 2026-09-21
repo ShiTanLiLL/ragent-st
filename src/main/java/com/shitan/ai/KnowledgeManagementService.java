@@ -6,6 +6,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -56,21 +57,27 @@ public class KnowledgeManagementService {
     }
 
     /**
-     * 同步完成原文件落盘、文本分块和片段向量化，并返回最终文档状态。
+     * 在 HTTP 请求线程中完成必要的轻量准备：校验文件、保存原文并登记 pending 文档。
      *
-     * <p>文档先登记为 pending，真正处理前改为 running；全部片段成功后才一次性发布索引。
-     * 任一步失败都会删除残留文件和片段，并保留 failed 文档记录供运营人员查看原因。</p>
+     * <p>解析、Embedding 和发布索引不在这里执行，而是由后台摄取任务继续处理。</p>
      *
      * @param knowledgeBaseId 文件所属知识库编号
      * @param file            Multipart 请求中的上传文件
-     * @return success 或 failed 状态的文档记录
+     * @return 已保存原文、状态为 pending 的文档
      */
-    public KnowledgeDocument upload(String knowledgeBaseId, MultipartFile file) {
+    public KnowledgeDocument prepareUpload(String knowledgeBaseId, MultipartFile file) {
         requireKnowledgeBase(knowledgeBaseId);
 
         String documentId = UUID.randomUUID().toString();
         String originalFilename = normalizeFilename(file.getOriginalFilename());
         Path storedFile = storageRoot.resolve(knowledgeBaseId).resolve(documentId + ".txt");
+
+        validateTextFile(file, originalFilename);
+        try {
+            saveOriginalFile(file, storedFile);
+        } catch (IOException exception) {
+            throw new UncheckedIOException("保存上传文件失败：" + readableMessage(exception), exception);
+        }
 
         KnowledgeDocument pending = new KnowledgeDocument(
                 documentId,
@@ -81,43 +88,106 @@ public class KnowledgeManagementService {
                 0,
                 null
         );
-        knowledgeRepository.saveDocument(pending);
-        knowledgeRepository.saveDocument(
-                changeStatus(pending, DocumentStatus.RUNNING, 0, null)
-        );
-
         try {
-            validateTextFile(file, originalFilename);
-            saveOriginalFile(file, storedFile);
-            List<KnowledgeChunk> indexedChunks = createIndex(
-                    knowledgeBaseId,
-                    documentId,
-                    storedFile
-            );
-
-            KnowledgeDocument success = changeStatus(
-                    pending,
-                    DocumentStatus.SUCCESS,
-                    indexedChunks.size(),
-                    null
-            );
-            // Repository 用一个事务同时写全部 Chunk 并更新 success，避免数据库出现半份索引。
-            knowledgeRepository.publishSuccessfulDocument(success, indexedChunks);
-            return success;
-        } catch (Exception exception) {
-            if (exception instanceof InterruptedException) {
-                Thread.currentThread().interrupt();
-            }
-            cleanupFailedUpload(documentId, storedFile);
-            KnowledgeDocument failed = changeStatus(
-                    pending,
-                    DocumentStatus.FAILED,
-                    0,
-                    readableMessage(exception)
-            );
-            knowledgeRepository.saveDocument(failed);
-            return failed;
+            knowledgeRepository.saveDocument(pending);
+            return pending;
+        } catch (RuntimeException exception) {
+            deleteStoredFile(storedFile);
+            throw exception;
         }
+    }
+
+    /**
+     * 后台线程真正开始工作时，把文档状态从 pending 改为 running。
+     *
+     * @param documentId 要处理的文档编号
+     * @return 更新后的 running 文档
+     */
+    public KnowledgeDocument markRunning(String documentId) {
+        KnowledgeDocument document = getDocument(documentId);
+        KnowledgeDocument running = changeStatus(document, DocumentStatus.RUNNING, 0, null);
+        knowledgeRepository.saveDocument(running);
+        return running;
+    }
+
+    /**
+     * 从已经落盘的原文件读取结构化知识块；这一阶段不调用模型也不写 Chunk 表。
+     *
+     * @param document 要读取的文档
+     * @return 文件中解析出的知识条目
+     * @throws IOException 文件读取失败
+     */
+    public List<KnowledgeEntry> parseDocument(KnowledgeDocument document) throws IOException {
+        List<KnowledgeEntry> entries = fileLoader.load(Path.of(document.storedPath()));
+        if (entries.isEmpty()) {
+            throw new IllegalArgumentException("文本中没有可建立索引的知识块");
+        }
+        return entries;
+    }
+
+    /**
+     * 逐条调用百炼 Embedding，把解析结果变成等待发布的带向量 Chunk。
+     *
+     * @param document 所属文档及知识库信息
+     * @param entries  parse 阶段得到的知识条目
+     * @return 全部完成向量化的片段；此时尚未写入数据库
+     * @throws IOException          百炼 HTTP 调用失败
+     * @throws InterruptedException 等待百炼响应时线程被中断
+     */
+    public List<KnowledgeChunk> createChunks(
+            KnowledgeDocument document,
+            List<KnowledgeEntry> entries
+    ) throws IOException, InterruptedException {
+        List<KnowledgeChunk> indexedChunks = new ArrayList<>();
+        for (KnowledgeEntry entry : entries) {
+            String embeddingText = entry.title() + "\n" + entry.content();
+            double[] vector = bailianClient.createEmbedding(embeddingText);
+            indexedChunks.add(new KnowledgeChunk(
+                    UUID.randomUUID().toString(),
+                    document.knowledgeBaseId(),
+                    document.id(),
+                    entry.title(),
+                    entry.content(),
+                    entry.keywords(),
+                    vector
+            ));
+        }
+        return indexedChunks;
+    }
+
+    /**
+     * 在第 9 课事务中发布全部 Chunk，并最后把文档改成 success。
+     *
+     * @param document 正在处理的文档
+     * @param chunks   全部已经生成向量的片段
+     * @return 已保存到数据库的 success 文档状态
+     */
+    public KnowledgeDocument publish(
+            KnowledgeDocument document,
+            List<KnowledgeChunk> chunks
+    ) {
+        KnowledgeDocument success = changeStatus(
+                document,
+                DocumentStatus.SUCCESS,
+                chunks.size(),
+                null
+        );
+        knowledgeRepository.publishSuccessfulDocument(success, chunks);
+        return success;
+    }
+
+    /**
+     * 后台任务失败时删除可能残留的 Chunk 并保存 failed 文档，但保留原文件供安全重试。
+     *
+     * @param documentId   失败文档编号
+     * @param errorMessage 任务可以展示的错误原因
+     */
+    public void markFailed(String documentId, String errorMessage) {
+        KnowledgeDocument document = getDocument(documentId);
+        knowledgeRepository.deleteChunks(documentId);
+        knowledgeRepository.saveDocument(
+                changeStatus(document, DocumentStatus.FAILED, 0, errorMessage)
+        );
     }
 
     /**
@@ -199,54 +269,15 @@ public class KnowledgeManagementService {
     }
 
     /**
-     * 用第 3 课格式读取文本块，并逐块调用百炼 Embedding 形成等待事务发布的片段列表。
+     * 登记 pending 文档失败时删除刚保存的本地文件，避免产生没有数据库归属的孤立原文。
      *
-     * @param knowledgeBaseId 所属知识库编号
-     * @param documentId      来源文档编号
-     * @param storedFile      已落盘的 UTF-8 文本文件
-     * @return 全部已经带向量的片段；任一片段失败时不会返回半成品
-     * @throws IOException          读取文件或调用百炼失败
-     * @throws InterruptedException 等待百炼响应时线程被中断
+     * @param storedFile 刚才尝试保存的文件
      */
-    private List<KnowledgeChunk> createIndex(
-            String knowledgeBaseId,
-            String documentId,
-            Path storedFile
-    ) throws IOException, InterruptedException {
-        List<KnowledgeEntry> entries = fileLoader.load(storedFile);
-        if (entries.isEmpty()) {
-            throw new IllegalArgumentException("文本中没有可建立索引的知识块");
-        }
-
-        List<KnowledgeChunk> indexedChunks = new ArrayList<>();
-        for (KnowledgeEntry entry : entries) {
-            String embeddingText = entry.title() + "\n" + entry.content();
-            double[] vector = bailianClient.createEmbedding(embeddingText);
-            indexedChunks.add(new KnowledgeChunk(
-                    UUID.randomUUID().toString(),
-                    knowledgeBaseId,
-                    documentId,
-                    entry.title(),
-                    entry.content(),
-                    entry.keywords(),
-                    vector
-            ));
-        }
-        return indexedChunks;
-    }
-
-    /**
-     * 清除失败上传可能留下的文件和未完成索引；清理失败不会覆盖最初的处理错误。
-     *
-     * @param documentId 文档编号
-     * @param storedFile 可能已经写入的本地文件
-     */
-    private void cleanupFailedUpload(String documentId, Path storedFile) {
-        knowledgeRepository.deleteChunks(documentId);
+    private void deleteStoredFile(Path storedFile) {
         try {
             Files.deleteIfExists(storedFile);
         } catch (IOException ignored) {
-            // 文档状态仍优先报告原始失败原因；生产系统会在后续课程增加日志与补偿。
+            // 优先保留数据库异常；生产环境还应记录清理失败日志并安排补偿任务。
         }
     }
 
@@ -257,7 +288,7 @@ public class KnowledgeManagementService {
      * @param status       新状态
      * @param chunkCount   已发布片段数
      * @param errorMessage 失败原因
-     * @return 可以整体放回并发 Map 的新文档记录
+     * @return 可以整体写回数据库的新文档记录
      */
     private KnowledgeDocument changeStatus(
             KnowledgeDocument original,
@@ -282,7 +313,7 @@ public class KnowledgeManagementService {
      * @param exception 上传、解析或向量化异常
      * @return 简短可读的失败原因
      */
-    private String readableMessage(Exception exception) {
+    public String readableMessage(Exception exception) {
         String message = exception.getMessage();
         return message == null || message.isBlank() ? exception.getClass().getSimpleName() : message;
     }
