@@ -15,6 +15,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.List;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
@@ -114,6 +115,107 @@ public final class BailianClient {
             throw new IllegalStateException("Chat Completions 响应中没有回答文字");
         }
         return content.asText();
+    }
+
+    /**
+     * 根据摘要和最近原文补全省略主语的追问，只输出可独立向量化的一句话。
+     *
+     * @param question 用户本轮原始追问
+     * @param memory   会话服务限制后的摘要和近期消息
+     * @return 补齐上下文后的独立检索问题
+     * @throws IOException          网络通信或 JSON 解析失败
+     * @throws InterruptedException 等待百炼响应时线程被中断
+     */
+    public String rewriteQuestion(String question, ConversationMemory memory)
+            throws IOException, InterruptedException {
+        ArrayNode messages = objectMapper.createArrayNode();
+        messages.addObject()
+                .put("role", "system")
+                .put("content", "你是企业知识问答的查询改写器。请结合历史，把当前追问补全成可以独立检索的一句话。"
+                        + "保留用户真正想问的动作和限制条件，只输出改写后的问题，不要解释改写过程。");
+        addMemoryMessages(messages, memory);
+        messages.addObject()
+                .put("role", "user")
+                .put("content", "当前追问：" + question);
+        return completeChat(messages, 120);
+    }
+
+    /**
+     * 把已经滑出近期窗口的多轮消息压缩成短摘要，供下一次改写继续使用。
+     *
+     * @param existingSummary 之前保存的摘要，可为空
+     * @param messages         本次新滑出的消息，按时间升序排列
+     * @param maxChars         摘要最大字符数
+     * @return 模型生成的滚动摘要
+     * @throws IOException          网络通信或 JSON 解析失败
+     * @throws InterruptedException 等待百炼响应时线程被中断
+     */
+    public String summarizeConversation(
+            String existingSummary,
+            List<ConversationMessage> messages,
+            int maxChars
+    ) throws IOException, InterruptedException {
+        ArrayNode promptMessages = objectMapper.createArrayNode();
+        promptMessages.addObject()
+                .put("role", "system")
+                .put("content", "你是企业知识助手的会话摘要器。保留用户目标、已确认事实、约束和未完成事项，"
+                        + "去掉寒暄和重复内容。只输出一行摘要，严格不超过 " + maxChars + " 个字符。");
+        if (existingSummary != null && !existingSummary.isBlank()) {
+            promptMessages.addObject()
+                    .put("role", "system")
+                    .put("content", "已有摘要（只可合并和修正，不要凭空添加事实）：" + existingSummary);
+        }
+        for (ConversationMessage message : messages) {
+            promptMessages.addObject()
+                    .put("role", message.role().code())
+                    .put("content", message.content());
+        }
+        promptMessages.addObject()
+                .put("role", "user")
+                .put("content", "请输出合并后的单行摘要，最多 " + maxChars + " 个字符。");
+        return completeChat(promptMessages, Math.max(120, maxChars));
+    }
+
+    /**
+     * 把有界记忆转换为 Chat Completions 的 messages 数组；摘要用 system 表达，原文保留角色。
+     *
+     * @param messages 要继续填充的 JSON 数组
+     * @param memory   当前会话记忆
+     */
+    private void addMemoryMessages(ArrayNode messages, ConversationMemory memory) {
+        if (memory.summary() != null && !memory.summary().isBlank()) {
+            messages.addObject()
+                    .put("role", "system")
+                    .put("content", "历史摘要：" + memory.summary());
+        }
+        for (ConversationMessage message : memory.recentMessages()) {
+            messages.addObject()
+                    .put("role", message.role().code())
+                    .put("content", message.content());
+        }
+    }
+
+    /**
+     * 发送一次非流式 Chat Completions，并读取 choices[0].message.content。
+     *
+     * @param messages 已按 OpenAI 角色格式组织的消息数组
+     * @param maxTokens 本次生成上限
+     * @return 非空模型正文
+     * @throws IOException          网络通信或 JSON 解析失败
+     * @throws InterruptedException 等待百炼响应时线程被中断
+     */
+    private String completeChat(ArrayNode messages, int maxTokens)
+            throws IOException, InterruptedException {
+        ObjectNode requestBody = objectMapper.createObjectNode();
+        requestBody.put("model", CHAT_MODEL);
+        requestBody.set("messages", messages);
+        requestBody.put("max_tokens", maxTokens);
+        JsonNode responseBody = postJson("chat/completions", requestBody);
+        JsonNode content = responseBody.path("choices").path(0).path("message").path("content");
+        if (!content.isTextual() || content.asText().isBlank()) {
+            throw new IllegalStateException("Chat Completions 响应中没有回答文字");
+        }
+        return content.asText().strip();
     }
 
     /**

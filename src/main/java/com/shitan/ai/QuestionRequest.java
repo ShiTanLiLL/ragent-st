@@ -7,10 +7,14 @@ import jakarta.validation.constraints.NotBlank;
  *
  * @param question        用户希望知识助手回答的问题
  * @param knowledgeBaseId 可选的知识库编号；不传时继续使用课程内置政策
+ * @param conversationId  可选的已有会话编号；不传时为本次请求创建新会话
+ * @param userId          可选的教学用户标识；填写后启用持久化会话记忆
  */
 public record QuestionRequest(
         @NotBlank(message = "问题不能为空")
         String question,
-        String knowledgeBaseId
+        String knowledgeBaseId,
+        String conversationId,
+        String userId
 ) {
 }

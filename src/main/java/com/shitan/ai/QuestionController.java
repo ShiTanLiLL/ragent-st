@@ -11,7 +11,6 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
-import java.io.IOException;
 import java.util.List;
 
 /**
@@ -23,6 +22,7 @@ public class QuestionController {
 
     private final BailianRagAssistant assistant;
     private final StreamingQuestionService streamingQuestionService;
+    private final ConversationQuestionService conversationQuestionService;
     private final List<KnowledgeEntry> knowledgeEntries = List.of(
             new KnowledgeEntry(
                     "退货政策",
@@ -41,13 +41,16 @@ public class QuestionController {
      *
      * @param assistant                已经连接百炼客户端的 RAG 助手
      * @param streamingQuestionService 负责后台生成、SSE 发送和取消状态的流式服务
+     * @param conversationQuestionService 负责同步问答的会话记忆和摘要
      */
     public QuestionController(
             BailianRagAssistant assistant,
-            StreamingQuestionService streamingQuestionService
+            StreamingQuestionService streamingQuestionService,
+            ConversationQuestionService conversationQuestionService
     ) {
         this.assistant = assistant;
         this.streamingQuestionService = streamingQuestionService;
+        this.conversationQuestionService = conversationQuestionService;
     }
 
     /**
@@ -55,12 +58,21 @@ public class QuestionController {
      *
      * @param request 已完成 JSON 反序列化并准备接受校验的请求对象
      * @return 包含生成正文与证据来源的 HTTP 响应数据
-     * @throws IOException          百炼网络通信或响应解析失败
-     * @throws InterruptedException 等待百炼响应期间当前线程被中断
+     * @throws Exception 百炼网络通信、响应解析或会话数据库操作失败
      */
     @PostMapping
     public QuestionResponse ask(@Valid @RequestBody QuestionRequest request)
-            throws IOException, InterruptedException {
+            throws Exception {
+        if (request.conversationId() != null && !request.conversationId().isBlank()
+                && (request.userId() == null || request.userId().isBlank())) {
+            throw new IllegalArgumentException("conversationId 必须和 userId 一起提供");
+        }
+        if (request.userId() != null && !request.userId().isBlank()) {
+            if (!hasUploadedKnowledgeBase(request)) {
+                throw new IllegalArgumentException("带会话记忆的问答必须指定 knowledgeBaseId");
+            }
+            return conversationQuestionService.ask(request);
+        }
         KnowledgeAnswer answer;
         if (hasUploadedKnowledgeBase(request)) {
             answer = assistant.answerFromDatabase(

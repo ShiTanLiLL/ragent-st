@@ -115,6 +115,30 @@ public final class BailianRagAssistant {
     }
 
     /**
+     * 先用摘要和近期消息把省略追问改写成独立问题，再复用数据库 RAG 主链。
+     *
+     * @param question        用户本轮原始问题
+     * @param knowledgeBaseId 要检索的持久化知识库
+     * @param memory          本轮允许使用的有界会话记忆
+     * @return 最终 RAG 结果以及真正用于 Embedding 的改写问题
+     * @throws IOException          百炼网络通信或 JSON 解析失败
+     * @throws InterruptedException 等待百炼响应时线程被中断
+     */
+    public ContextualKnowledgeAnswer answerFromDatabase(
+            String question,
+            String knowledgeBaseId,
+            ConversationMemory memory
+    ) throws IOException, InterruptedException {
+        String rewrittenQuestion = memory.hasContext()
+                ? bailianClient.rewriteQuestion(question, memory)
+                : question;
+        return new ContextualKnowledgeAnswer(
+                answerFromDatabase(rewrittenQuestion, knowledgeBaseId),
+                rewrittenQuestion
+        );
+    }
+
+    /**
      * 执行“知识向量化 → 问题向量化 → Top-1 检索 → 流式生成”，每得到一段回答就立即回调上层。
      *
      * @param question         用户问题

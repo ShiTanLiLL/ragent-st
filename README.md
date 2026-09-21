@@ -2,7 +2,7 @@
 
 这是 Ragent 的渐进式教学重建项目，不是原项目的精简副本。
 
-第 1～11 课已经完成。第 12 课让不同知识来源选择不同加工链：上传文件执行 `parse → embedding → publish`，远程 URL 执行 `fetch → parse → embedding → publish`，每个节点都保存状态和耗时。
+第 1～12 课已经完成。第 13 课让同步问答保存会话和消息，使用有限近期历史改写追问，并把滑出窗口的旧消息压缩成摘要。
 
 课程资料位于项目内的 `tutorial/`，长期约束见 `tutorial/工作守则.md`。
 
@@ -12,7 +12,7 @@
 mvn test
 ```
 
-当前普通测试应有十三个全部通过：前十课十一项回归，加上两个结构化文档解析与格式识别测试。
+当前普通测试应有十六个全部通过：历史业务回归、结构化文档测试和第 12 课流程结构测试。
 
 第 6 课真实 Web 流程不会随普通测试自动运行。确认百炼环境已配置后，手动执行：
 
@@ -41,3 +41,5 @@ docker compose up -d
 第 10 课先运行不调用百炼的 `AsyncIngestionIT`，观察 pending、failed、retry 和防重复执行；再运行 `AsyncKnowledgeUploadApiLiveIT`，用真实 HTTP、PostgreSQL 和百炼验收后台成功通路。
 
 第 12 课先运行 `IngestionPipelineTest` 理解两条顺序及断链/成环校验，再运行 `RemoteKnowledgeApiLiveIT` 验收远程获取、四节点、数据库和真实百炼，最后运行 `AsyncKnowledgeUploadApiLiveIT.shouldUploadIndexAndAnswerFromNewKnowledge` 回归旧上传三节点通路。
+
+第 13 课打开 `ConversationQuestionApiLiveIT` 点击绿色按钮，观察两轮追问的消息顺序、模型改写、摘要水位和 Alice/Bob 用户隔离；测试会真实调用百炼查询改写、回答和摘要。
