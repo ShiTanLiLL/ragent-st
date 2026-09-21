@@ -2,7 +2,7 @@
 
 这是 Ragent 的渐进式教学重建项目，不是原项目的精简副本。
 
-第 1～12 课已经完成。第 13 课让同步问答保存会话和消息，使用有限近期历史改写追问，并把滑出窗口的旧消息压缩成摘要。
+第 1～13 课已经完成。第 14 课在同步会话问答前拆分复合问题，并为每个子问题选择知识库作用域；低置信度回落全库，同名候选先向用户澄清。
 
 课程资料位于项目内的 `tutorial/`，长期约束见 `tutorial/工作守则.md`。
 
@@ -43,3 +43,5 @@ docker compose up -d
 第 12 课先运行 `IngestionPipelineTest` 理解两条顺序及断链/成环校验，再运行 `RemoteKnowledgeApiLiveIT` 验收远程获取、四节点、数据库和真实百炼，最后运行 `AsyncKnowledgeUploadApiLiveIT.shouldUploadIndexAndAnswerFromNewKnowledge` 回归旧上传三节点通路。
 
 第 13 课打开 `ConversationQuestionApiLiveIT` 点击绿色按钮，观察两轮追问的消息顺序、模型改写、摘要水位和 Alice/Bob 用户隔离；测试会真实调用百炼查询改写、回答和摘要。
+
+第 14 课打开 `IntentRoutingApiLiveIT` 点击绿色按钮，观察“年假 + 报销”被拆成两个子问题并分别定向检索，以及低置信度回落和同名意图澄清；测试会真实使用 pgvector 与百炼。

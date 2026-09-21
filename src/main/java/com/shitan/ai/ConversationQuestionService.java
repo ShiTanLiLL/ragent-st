@@ -9,20 +9,20 @@ import org.springframework.stereotype.Service;
 public class ConversationQuestionService {
 
     private final ConversationMemoryService memoryService;
-    private final BailianRagAssistant assistant;
+    private final IntentRoutingService intentRoutingService;
 
     /**
-     * 保存会话记忆层和现有 RAG 助手；不把 SQL 或模型协议塞进 Controller。
+     * 保存会话记忆层和意图路由编排器；不把 SQL 或模型协议塞进 Controller。
      *
      * @param memoryService 会话、消息、摘要服务
-     * @param assistant    负责问题改写、向量检索和最终回答
+     * @param intentRoutingService 负责拆问、作用域选择和低置信度回落
      */
     public ConversationQuestionService(
             ConversationMemoryService memoryService,
-            BailianRagAssistant assistant
+            IntentRoutingService intentRoutingService
     ) {
         this.memoryService = memoryService;
-        this.assistant = assistant;
+        this.intentRoutingService = intentRoutingService;
     }
 
     /**
@@ -46,7 +46,7 @@ public class ConversationQuestionService {
                 request.question()
         );
 
-        ContextualKnowledgeAnswer contextualAnswer = assistant.answerFromDatabase(
+        RoutedKnowledgeAnswer routedAnswer = intentRoutingService.answer(
                 request.question(),
                 request.knowledgeBaseId(),
                 memory
@@ -55,15 +55,16 @@ public class ConversationQuestionService {
                 conversationId,
                 request.userId(),
                 ConversationRole.ASSISTANT,
-                contextualAnswer.answer().content()
+                routedAnswer.answer()
         );
         memoryService.compactIfNeeded(conversationId, request.userId());
 
         return new QuestionResponse(
-                contextualAnswer.answer().content(),
-                contextualAnswer.answer().sourceTitle(),
+                routedAnswer.answer(),
+                routedAnswer.sourceTitle(),
                 conversationId,
-                contextualAnswer.rewrittenQuestion()
+                routedAnswer.rewrittenQuestion(),
+                routedAnswer.plans()
         );
     }
 

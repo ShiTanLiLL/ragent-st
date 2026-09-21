@@ -9,6 +9,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Optional;
@@ -48,6 +49,21 @@ public class KnowledgeRepository {
                 "INSERT INTO knowledge_base(id, name) VALUES (?, ?)",
                 knowledgeBase.id(),
                 knowledgeBase.name()
+        );
+    }
+
+    /**
+     * 返回当前所有知识库的编号和名称，供意图规划器建立最小作用域候选。
+     *
+     * @return 按名称排序的知识库列表
+     */
+    public List<KnowledgeBase> findAllKnowledgeBases() {
+        return jdbcTemplate.query(
+                "SELECT id, name FROM knowledge_base ORDER BY name, id",
+                (resultSet, rowNumber) -> new KnowledgeBase(
+                        resultSet.getString("id"),
+                        resultSet.getString("name")
+                )
         );
     }
 
@@ -169,15 +185,42 @@ public class KnowledgeRepository {
             String knowledgeBaseId,
             double[] questionVector
     ) {
+        if (knowledgeBaseId == null || knowledgeBaseId.isBlank()) {
+            return searchTopOneInKnowledgeBases(Collections.emptyList(), questionVector);
+        }
         if (!knowledgeBaseExists(knowledgeBaseId)) {
             throw new NoSuchElementException("知识库不存在：" + knowledgeBaseId);
         }
+
+        return searchTopOneInKnowledgeBases(List.of(knowledgeBaseId), questionVector);
+    }
+
+    /**
+     * 在指定知识库集合中检索；空集合表示所有知识库，用于低置信度回落。
+     *
+     * @param knowledgeBaseIds 允许参与检索的知识库编号，空列表表示全库
+     * @param questionVector   当前问题的向量
+     * @return Top-1 证据；没有成功片段时为空
+     */
+    public Optional<KnowledgeEntry> searchTopOneInKnowledgeBases(
+            List<String> knowledgeBaseIds,
+            double[] questionVector
+    ) {
+        List<Object> arguments = new ArrayList<>();
+        String scopeSql = "";
+        if (!knowledgeBaseIds.isEmpty()) {
+            String placeholders = String.join(",", Collections.nCopies(knowledgeBaseIds.size(), "?"));
+            scopeSql = " AND d.knowledge_base_id IN (" + placeholders + ")";
+            arguments.addAll(knowledgeBaseIds);
+        }
+        arguments.add(toVectorLiteral(questionVector));
 
         List<KnowledgeEntry> results = jdbcTemplate.query("""
                 SELECT c.title, c.content, c.keywords
                 FROM knowledge_chunk c
                 JOIN knowledge_document d ON d.id = c.document_id
-                WHERE d.knowledge_base_id = ? AND d.status = 'success'
+                WHERE d.status = 'success'
+                """ + scopeSql + """
                 ORDER BY c.embedding <=> CAST(? AS vector)
                 LIMIT 1
                 """,
@@ -186,8 +229,7 @@ public class KnowledgeRepository {
                         resultSet.getString("content"),
                         decodeKeywords(resultSet.getString("keywords"))
                 ),
-                knowledgeBaseId,
-                toVectorLiteral(questionVector)
+                arguments.toArray()
         );
         return results.stream().findFirst();
     }

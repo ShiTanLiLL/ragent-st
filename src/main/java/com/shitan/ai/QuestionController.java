@@ -68,9 +68,6 @@ public class QuestionController {
             throw new IllegalArgumentException("conversationId 必须和 userId 一起提供");
         }
         if (request.userId() != null && !request.userId().isBlank()) {
-            if (!hasUploadedKnowledgeBase(request)) {
-                throw new IllegalArgumentException("带会话记忆的问答必须指定 knowledgeBaseId");
-            }
             return conversationQuestionService.ask(request);
         }
         KnowledgeAnswer answer;

@@ -102,9 +102,28 @@ public final class BailianRagAssistant {
             String question,
             String knowledgeBaseId
     ) throws IOException, InterruptedException {
+        List<String> knowledgeBaseIds = knowledgeBaseId == null || knowledgeBaseId.isBlank()
+                ? List.of()
+                : List.of(knowledgeBaseId);
+        return answerFromDatabase(question, knowledgeBaseIds);
+    }
+
+    /**
+     * 在意图规划器给出的知识库作用域中检索；空列表表示低置信度时回落全库。
+     *
+     * @param question         已经拆分、可独立检索的问题
+     * @param knowledgeBaseIds 允许访问的知识库编号，空列表表示全部
+     * @return 模型回答及 Top-1 证据标题
+     * @throws IOException          百炼网络通信或响应解析失败
+     * @throws InterruptedException 等待百炼响应期间线程被中断
+     */
+    public KnowledgeAnswer answerFromDatabase(
+            String question,
+            List<String> knowledgeBaseIds
+    ) throws IOException, InterruptedException {
         KnowledgeRepository repository = requireKnowledgeRepository();
         double[] questionVector = bailianClient.createEmbedding(question);
-        KnowledgeEntry evidence = repository.searchTopOne(knowledgeBaseId, questionVector)
+        KnowledgeEntry evidence = repository.searchTopOneInKnowledgeBases(knowledgeBaseIds, questionVector)
                 .orElse(null);
         if (evidence == null) {
             return new KnowledgeAnswer("暂时没有找到相关知识。", null);
@@ -112,6 +131,20 @@ public final class BailianRagAssistant {
 
         String generatedAnswer = bailianClient.generateAnswer(question, evidence);
         return new KnowledgeAnswer(generatedAnswer, evidence.title());
+    }
+
+    /**
+     * 有会话历史时改写追问；第一问直接返回原问题，避免多调用一次模型。
+     *
+     * @param question 用户原始问题
+     * @param memory   当前会话允许使用的有界记忆
+     * @return 实际交给意图规划器的问题
+     * @throws IOException          百炼网络通信或响应解析失败
+     * @throws InterruptedException 等待百炼响应期间线程被中断
+     */
+    public String rewriteQuestionIfNeeded(String question, ConversationMemory memory)
+            throws IOException, InterruptedException {
+        return memory.hasContext() ? bailianClient.rewriteQuestion(question, memory) : question;
     }
 
     /**
@@ -129,9 +162,7 @@ public final class BailianRagAssistant {
             String knowledgeBaseId,
             ConversationMemory memory
     ) throws IOException, InterruptedException {
-        String rewrittenQuestion = memory.hasContext()
-                ? bailianClient.rewriteQuestion(question, memory)
-                : question;
+        String rewrittenQuestion = rewriteQuestionIfNeeded(question, memory);
         return new ContextualKnowledgeAnswer(
                 answerFromDatabase(rewrittenQuestion, knowledgeBaseId),
                 rewrittenQuestion
