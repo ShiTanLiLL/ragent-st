@@ -2,7 +2,7 @@
 
 这是 Ragent 的渐进式教学重建项目，不是原项目的精简副本。
 
-第 1～9 课已经完成。第 10 课正在把同步上传改造成后台摄取：HTTP 只保存原文并登记任务，线程池随后执行解析、Embedding 和发布；任务、尝试次数、阶段耗时与错误都保存到 PostgreSQL。
+第 1～10 课已经完成。第 11 课正在让后台解析认识真实文档结构：Tika 探测 MIME，CommonMark 解析 Markdown 标题、段落和表格，结构分块器再生成展示文本与向量文本。
 
 课程资料位于项目内的 `tutorial/`，长期约束见 `tutorial/工作守则.md`。
 
@@ -12,7 +12,7 @@
 mvn test
 ```
 
-当前应有十一个测试全部通过：九个已有问答、文件与向量检索测试，以及两个模型 HTTP/RAG 流程测试。
+当前普通测试应有十三个全部通过：前十课十一项回归，加上两个结构化文档解析与格式识别测试。
 
 第 6 课真实 Web 流程不会随普通测试自动运行。确认百炼环境已配置后，手动执行：
 
@@ -39,3 +39,5 @@ docker compose up -d
 数据库数据保存在命名卷中；不要使用会删除卷的 `docker compose down -v`。
 
 第 10 课先运行不调用百炼的 `AsyncIngestionIT`，观察 pending、failed、retry 和防重复执行；再运行 `AsyncKnowledgeUploadApiLiveIT`，用真实 HTTP、PostgreSQL 和百炼验收后台成功通路。
+
+第 11 课先运行 `StructuredDocumentProcessingTest`，观察 MIME、Block、章节路径、Markdown 表格展示文本和 Embedding 文本；再运行 `KnowledgePersistenceIT` 验证 V3 迁移，最后运行 `AsyncKnowledgeUploadApiLiveIT.shouldUploadIndexAndAnswerFromNewKnowledge` 验收真实 Markdown 上传与问答。

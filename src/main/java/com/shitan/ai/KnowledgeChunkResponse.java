@@ -6,16 +6,20 @@ package com.shitan.ai;
  * @param id              片段编号
  * @param knowledgeBaseId 所属知识库编号
  * @param documentId      来源文档编号
+ * @param chunkIndex      在原文中的稳定顺序
  * @param title           片段标题
  * @param content         片段正文
+ * @param embeddingText   实际用于生成向量的文本，便于运营人员理解检索依据
  * @param vectorDimension 已生成向量的维度
  */
 public record KnowledgeChunkResponse(
         String id,
         String knowledgeBaseId,
         String documentId,
+        int chunkIndex,
         String title,
         String content,
+        String embeddingText,
         int vectorDimension
 ) {
 
@@ -30,8 +34,10 @@ public record KnowledgeChunkResponse(
                 chunk.id(),
                 chunk.knowledgeBaseId(),
                 chunk.documentId(),
+                chunk.chunkIndex(),
                 chunk.title(),
                 chunk.content(),
+                chunk.embeddingText(),
                 chunk.vector().length
         );
     }

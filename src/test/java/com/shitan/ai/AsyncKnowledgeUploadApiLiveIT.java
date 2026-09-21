@@ -49,17 +49,22 @@ class AsyncKnowledgeUploadApiLiveIT {
         String knowledgeBaseId = knowledgeBase.path("id").asText();
         assertFalse(knowledgeBaseId.isBlank());
 
-        // 第二步：上传沿用第 3 课格式的 UTF-8 文本；两个空行把它切成两块知识。
+        // 第二步：上传真实 Markdown。标题层级决定片段来源，表格必须保持列和值的关系。
         String documentText = """
-                # 年假规则
-                关键词：年假、休假
+                # 公司制度
+
+                ## 年假规则
+
                 员工连续工作满一年后，每年享有 5 天带薪年假。
 
-                # 访客规则
-                关键词：访客、预约
-                外部访客进入办公室前，需要由接待员工提前一天完成预约。
+                ## 访客预约时限
+
+                | 访客类型 | 最晚预约时间 |
+                | --- | --- |
+                | 外部访客 | 到访前一天 |
+                | 面试候选人 | 到访前两小时 |
                 """;
-        JsonNode accepted = uploadText(knowledgeBaseId, "company-rules.txt", documentText);
+        JsonNode accepted = uploadText(knowledgeBaseId, "company-rules.md", documentText);
 
         // HTTP 202 只返回任务和文档编号；此刻不会等待两个 Embedding 全部完成。
         assertEquals("pending", accepted.path("status").asText());
@@ -88,9 +93,14 @@ class AsyncKnowledgeUploadApiLiveIT {
         assertEquals("publish", steps.path(2).path("stepName").asText());
 
         // 片段保留知识库和文档归属；vectorDimension > 0 证明上传阶段确实调用百炼建立了索引。
+        assertEquals(0, chunks.path(0).path("chunkIndex").asInt());
+        assertEquals(1, chunks.path(1).path("chunkIndex").asInt());
         assertEquals(knowledgeBaseId, chunks.path(0).path("knowledgeBaseId").asText());
         assertEquals(documentId, chunks.path(0).path("documentId").asText());
-        assertEquals("年假规则", chunks.path(0).path("title").asText());
+        assertEquals("公司制度 / 年假规则", chunks.path(0).path("title").asText());
+        assertTrue(chunks.path(0).path("embeddingText").asText().contains("公司制度 > 年假规则"));
+        assertTrue(chunks.path(1).path("content").asText().contains("| 访客类型 | 最晚预约时间 |"));
+        assertTrue(chunks.path(1).path("embeddingText").asText().contains("访客类型：外部访客；最晚预约时间：到访前一天"));
         assertTrue(chunks.path(0).path("vectorDimension").asInt() > 0);
 
         // 第三步：问题明确指定刚创建的知识库；问答只需再向量化问题并检索已保存的片段向量。
@@ -102,7 +112,7 @@ class AsyncKnowledgeUploadApiLiveIT {
                 """.formatted(knowledgeBaseId));
 
         assertFalse(answer.path("answer").asText().isBlank());
-        assertEquals("年假规则", answer.path("sourceTitle").asText());
+        assertEquals("公司制度 / 年假规则", answer.path("sourceTitle").asText());
 
         System.out.println("上传接口立即返回：" + accepted);
         System.out.println("后台任务最终状态：" + completedTask);

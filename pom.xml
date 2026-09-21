@@ -16,6 +16,8 @@
         <jackson.version>2.22.2</jackson.version>
         <spring-boot.version>4.1.1</spring-boot.version>
         <testcontainers.version>2.0.5</testcontainers.version>
+        <tika.version>3.2.3</tika.version>
+        <commonmark.version>0.22.0</commonmark.version>
     </properties>
 
     <dependencyManagement>
@@ -73,6 +75,26 @@
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
             <version>${jackson.version}</version>
+        </dependency>
+
+        <!-- 第 11 课根据文件字节和原文件名探测 MIME，不再只看扩展名猜格式。 -->
+        <dependency>
+            <groupId>org.apache.tika</groupId>
+            <artifactId>tika-core</artifactId>
+            <version>${tika.version}</version>
+        </dependency>
+
+        <!-- CommonMark 把 Markdown 解析成语法树，避免用正则重新发明 Markdown 语法。 -->
+        <dependency>
+            <groupId>org.commonmark</groupId>
+            <artifactId>commonmark</artifactId>
+            <version>${commonmark.version}</version>
+        </dependency>
+        <!-- GFM 表格不是 CommonMark 核心语法，需要单独启用官方扩展。 -->
+        <dependency>
+            <groupId>org.commonmark</groupId>
+            <artifactId>commonmark-ext-gfm-tables</artifactId>
+            <version>${commonmark.version}</version>
         </dependency>
 
         <!-- 启动真实 Spring 应用和随机端口 Web 服务器进行完整链路测试。 -->

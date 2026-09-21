@@ -106,14 +106,17 @@ public class KnowledgeRepository {
             for (KnowledgeChunk chunk : chunks) {
                 jdbcTemplate.update("""
                         INSERT INTO knowledge_chunk(
-                            id, document_id, title, content, keywords, embedding
-                        ) VALUES (?, ?, ?, ?, ?, CAST(? AS vector))
+                            id, document_id, chunk_index, title, content, keywords,
+                            embedding_text, embedding
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, CAST(? AS vector))
                         """,
                         chunk.id(),
                         chunk.documentId(),
+                        chunk.chunkIndex(),
                         chunk.title(),
                         chunk.content(),
                         encodeKeywords(chunk.keywords()),
+                        chunk.embeddingText(),
                         toVectorLiteral(chunk.vector())
                 );
             }
@@ -146,11 +149,12 @@ public class KnowledgeRepository {
     public List<KnowledgeChunk> findChunksByDocument(String documentId) {
         return jdbcTemplate.query("""
                 SELECT c.id, d.knowledge_base_id, c.document_id,
-                       c.title, c.content, c.keywords, c.embedding
+                       c.chunk_index, c.title, c.content, c.keywords,
+                       c.embedding_text, c.embedding
                 FROM knowledge_chunk c
                 JOIN knowledge_document d ON d.id = c.document_id
                 WHERE c.document_id = ?
-                ORDER BY c.id
+                ORDER BY c.chunk_index, c.id
                 """, this::mapChunk, documentId);
     }
 
@@ -230,9 +234,11 @@ public class KnowledgeRepository {
                 resultSet.getString("id"),
                 resultSet.getString("knowledge_base_id"),
                 resultSet.getString("document_id"),
+                resultSet.getInt("chunk_index"),
                 resultSet.getString("title"),
                 resultSet.getString("content"),
                 decodeKeywords(resultSet.getString("keywords")),
+                resultSet.getString("embedding_text"),
                 parseVector(resultSet.getString("embedding"))
         );
     }

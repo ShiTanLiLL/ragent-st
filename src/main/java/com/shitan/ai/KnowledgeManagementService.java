@@ -23,7 +23,8 @@ public class KnowledgeManagementService {
 
     private final BailianClient bailianClient;
     private final KnowledgeRepository knowledgeRepository;
-    private final KnowledgeFileLoader fileLoader = new KnowledgeFileLoader();
+    private final DocumentParsingService documentParsingService = new DocumentParsingService();
+    private final StructuredDocumentChunker documentChunker = new StructuredDocumentChunker();
     private final Path storageRoot;
 
     /**
@@ -111,16 +112,20 @@ public class KnowledgeManagementService {
     }
 
     /**
-     * 从已经落盘的原文件读取结构化知识块；这一阶段不调用模型也不写 Chunk 表。
+     * 探测原文件 MIME、选择解析器并按文档结构产生知识片段；这一阶段不调用模型也不写 Chunk 表。
      *
      * @param document 要读取的文档
      * @return 文件中解析出的知识条目
      * @throws IOException 文件读取失败
      */
     public List<KnowledgeEntry> parseDocument(KnowledgeDocument document) throws IOException {
-        List<KnowledgeEntry> entries = fileLoader.load(Path.of(document.storedPath()));
+        ParsedDocument parsedDocument = documentParsingService.parse(
+                Path.of(document.storedPath()),
+                document.originalFilename()
+        );
+        List<KnowledgeEntry> entries = documentChunker.chunk(parsedDocument);
         if (entries.isEmpty()) {
-            throw new IllegalArgumentException("文本中没有可建立索引的知识块");
+            throw new IllegalArgumentException("文档中没有可建立索引的内容");
         }
         return entries;
     }
@@ -139,16 +144,18 @@ public class KnowledgeManagementService {
             List<KnowledgeEntry> entries
     ) throws IOException, InterruptedException {
         List<KnowledgeChunk> indexedChunks = new ArrayList<>();
-        for (KnowledgeEntry entry : entries) {
-            String embeddingText = entry.title() + "\n" + entry.content();
-            double[] vector = bailianClient.createEmbedding(embeddingText);
+        for (int chunkIndex = 0; chunkIndex < entries.size(); chunkIndex++) {
+            KnowledgeEntry entry = entries.get(chunkIndex);
+            double[] vector = bailianClient.createEmbedding(entry.embeddingText());
             indexedChunks.add(new KnowledgeChunk(
                     UUID.randomUUID().toString(),
                     document.knowledgeBaseId(),
                     document.id(),
+                    chunkIndex,
                     entry.title(),
                     entry.content(),
                     entry.keywords(),
+                    entry.embeddingText(),
                     vector
             ));
         }
@@ -250,7 +257,7 @@ public class KnowledgeManagementService {
             throw new IllegalArgumentException("上传文件不能为空");
         }
         if (!lowerName.endsWith(".txt") && !lowerName.endsWith(".md")) {
-            throw new IllegalArgumentException("第 8 课只支持 .txt 和 .md 文本文件");
+            throw new IllegalArgumentException("第 11 课当前支持 .txt 和 .md 文件");
         }
     }
 
