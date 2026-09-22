@@ -13,6 +13,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Optional;
+import java.util.Comparator;
+import java.util.Locale;
 
 /**
  * 用 JDBC 保存和读取知识库、文档、片段及向量；这是当前唯一的 PostgreSQL 数据访问实现。
@@ -232,6 +234,139 @@ public class KnowledgeRepository {
                 arguments.toArray()
         );
         return results.stream().findFirst();
+    }
+
+    /**
+     * 让向量通道返回带原始余弦相似度的 Top-N 候选，供后面的 RRF 保留名次和观察分数。
+     *
+     * @param knowledgeBaseIds 作用域编号，空列表表示全库
+     * @param questionVector   问题向量
+     * @param limit             通道召回上限
+     * @return 按向量相似度降序排列的候选
+     */
+    public List<RetrievedEvidence> searchVectorCandidates(
+            List<String> knowledgeBaseIds,
+            double[] questionVector,
+            int limit
+    ) {
+        List<Object> scopeArguments = new ArrayList<>();
+        String scopeSql = appendScope(knowledgeBaseIds, scopeArguments);
+        return jdbcTemplate.query("""
+                SELECT c.id, c.title, c.content,
+                       1 - (c.embedding <=> CAST(? AS vector)) AS vector_score
+                FROM knowledge_chunk c
+                JOIN knowledge_document d ON d.id = c.document_id
+                WHERE d.status = 'success'
+                """ + scopeSql + """
+                ORDER BY c.embedding <=> CAST(? AS vector)
+                LIMIT ?
+                """,
+                (resultSet, rowNumber) -> RetrievedEvidence.fromVector(
+                        resultSet.getString("id"),
+                        resultSet.getString("title"),
+                        resultSet.getString("content"),
+                        resultSet.getDouble("vector_score")
+                ),
+                // 占位符顺序是 SELECT 向量、作用域编号、ORDER BY 向量、LIMIT。
+                argumentsWithRepeatedVector(questionVector, knowledgeBaseIds, limit).toArray()
+        );
+    }
+
+    /**
+     * 在同一知识库作用域中读取文本候选，再按关键词出现次数计算精确词分。
+     *
+     * @param knowledgeBaseIds 作用域编号，空列表表示全库
+     * @param terms            已提取的精确词或短语
+     * @param limit             关键词通道召回上限
+     * @return 按关键词分降序排列的候选
+     */
+    public List<RetrievedEvidence> searchKeywordCandidates(
+            List<String> knowledgeBaseIds,
+            List<String> terms,
+            int limit
+    ) {
+        List<Object> arguments = new ArrayList<>();
+        String scopeSql = appendScope(knowledgeBaseIds, arguments);
+        List<KeywordRow> rows = jdbcTemplate.query("""
+                SELECT c.id, c.title, c.content, c.embedding_text
+                FROM knowledge_chunk c
+                JOIN knowledge_document d ON d.id = c.document_id
+                WHERE d.status = 'success'
+                """ + scopeSql,
+                (resultSet, rowNumber) -> new KeywordRow(
+                        resultSet.getString("id"),
+                        resultSet.getString("title"),
+                        resultSet.getString("content"),
+                        resultSet.getString("embedding_text")
+                ),
+                arguments.toArray()
+        );
+        return rows.stream()
+                .map(row -> RetrievedEvidence.fromKeyword(
+                        row.id(), row.title(), row.content(), keywordScore(row, terms)
+                ))
+                .filter(candidate -> candidate.keywordScore() > 0)
+                .sorted(Comparator.comparingDouble(RetrievedEvidence::keywordScore).reversed())
+                .limit(limit)
+                .toList();
+    }
+
+    /**
+     * 生成可选的知识库过滤条件，同时把编号放入 JDBC 参数列表而不是 SQL 字符串。
+     */
+    private String appendScope(List<String> knowledgeBaseIds, List<Object> arguments) {
+        if (knowledgeBaseIds.isEmpty()) {
+            return "";
+        }
+        String placeholders = String.join(",", Collections.nCopies(knowledgeBaseIds.size(), "?"));
+        arguments.addAll(knowledgeBaseIds);
+        return " AND d.knowledge_base_id IN (" + placeholders + ") ";
+    }
+
+    /**
+     * 向量 SQL 在 SELECT 和 ORDER BY 各占一个参数，因此复制一份向量文本参数。
+     */
+    private List<Object> argumentsWithRepeatedVector(
+            double[] questionVector,
+            List<String> knowledgeBaseIds,
+            int limit
+    ) {
+        List<Object> arguments = new ArrayList<>();
+        String vectorLiteral = toVectorLiteral(questionVector);
+        // SELECT 中的向量占位符出现在作用域条件之前。
+        arguments.add(vectorLiteral);
+        arguments.addAll(knowledgeBaseIds);
+        arguments.add(vectorLiteral);
+        arguments.add(limit);
+        return arguments;
+    }
+
+    /**
+     * 统计候选标题、展示正文和向量文本中精确词的出现次数，并给长词更多权重。
+     */
+    private double keywordScore(KeywordRow row, List<String> terms) {
+        String searchable = (row.title() + "\n" + row.content() + "\n" + row.embeddingText())
+                .toLowerCase(Locale.ROOT);
+        return terms.stream()
+                .map(String::toLowerCase)
+                .mapToDouble(term -> occurrences(searchable, term) * Math.max(1, term.length()))
+                .sum();
+    }
+
+    /**
+     * 从指定位置继续查找短语，统计它在标题、正文和向量文本中的非重叠出现次数。
+     */
+    private int occurrences(String text, String term) {
+        int count = 0;
+        int fromIndex = 0;
+        while ((fromIndex = text.indexOf(term, fromIndex)) >= 0) {
+            count++;
+            fromIndex += term.length();
+        }
+        return count;
+    }
+
+    private record KeywordRow(String id, String title, String content, String embeddingText) {
     }
 
     /**

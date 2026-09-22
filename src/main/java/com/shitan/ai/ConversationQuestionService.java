@@ -64,7 +64,8 @@ public class ConversationQuestionService {
                 routedAnswer.sourceTitle(),
                 conversationId,
                 routedAnswer.rewrittenQuestion(),
-                routedAnswer.plans()
+                routedAnswer.plans(),
+                routedAnswer.evidence()
         );
     }
 

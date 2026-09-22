@@ -15,6 +15,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -89,6 +91,20 @@ public final class BailianClient {
 
     public String generateAnswer(String question, KnowledgeEntry evidence)
             throws IOException, InterruptedException {
+        return generateAnswer(question, List.of(evidence));
+    }
+
+    /**
+     * 根据多条已经通过检索和精排的证据生成最终回答；证据列表有界，避免 Prompt 无限增长。
+     *
+     * @param question 用户问题
+     * @param evidences 已通过检索质量控制的证据
+     * @return 模型回答正文
+     * @throws IOException          网络通信或 JSON 解析失败
+     * @throws InterruptedException 等待百炼响应时线程被中断
+     */
+    public String generateAnswer(String question, List<KnowledgeEntry> evidences)
+            throws IOException, InterruptedException {
         ObjectNode requestBody = objectMapper.createObjectNode();
         requestBody.put("model", CHAT_MODEL);
 
@@ -97,14 +113,15 @@ public final class BailianClient {
         messages.addObject()
                 .put("role", "system")
                 .put("content", "你是企业知识助手。只能根据提供的证据回答；证据不足时必须明确说不知道。");
-        messages.addObject()
-                .put("role", "user")
-                .put(
-                        "content",
-                        "问题：" + question
-                                + "\n\n证据标题：" + evidence.title()
-                                + "\n证据正文：" + evidence.content()
-                );
+        StringBuilder prompt = new StringBuilder("问题：").append(question);
+        for (int index = 0; index < evidences.size(); index++) {
+            KnowledgeEntry evidence = evidences.get(index);
+            prompt.append("\n\n证据").append(index + 1).append("标题：")
+                    .append(evidence.title())
+                    .append("\n证据").append(index + 1).append("正文：")
+                    .append(evidence.content());
+        }
+        messages.addObject().put("role", "user").put("content", prompt.toString());
         requestBody.put("max_tokens", 300);
 
         JsonNode responseBody = postJson("chat/completions", requestBody);
@@ -115,6 +132,86 @@ public final class BailianClient {
             throw new IllegalStateException("Chat Completions 响应中没有回答文字");
         }
         return content.asText();
+    }
+
+    /**
+     * 使用当前已配置的 Chat Completions 模型为候选证据打 0～1 相关性分。
+     *
+     * <p>百炼独立 Rerank 接口需要额外的工作空间地址；本课先复用已经配置成功的 Chat 端点，
+     * 把“候选送入精排、读取分数、质量门槛”这条数据流跑通，后续替换为专用 Rerank Client 时不改变上层契约。</p>
+     *
+     * @param question  用户问题
+     * @param candidates RRF 截断后的候选
+     * @param topN       最多返回的证据数
+     * @return 按相关性从高到低排列并带精排分的候选
+     * @throws IOException          网络通信或 JSON 解析失败
+     * @throws InterruptedException 等待百炼响应时线程被中断
+     */
+    public List<RetrievedEvidence> rerank(
+            String question,
+            List<RetrievedEvidence> candidates,
+            int topN
+    ) throws IOException, InterruptedException {
+        if (candidates.isEmpty()) {
+            return List.of();
+        }
+        ArrayNode documents = objectMapper.createArrayNode();
+        for (int index = 0; index < candidates.size(); index++) {
+            RetrievedEvidence candidate = candidates.get(index);
+            documents.addObject()
+                    .put("index", index)
+                    .put("title", candidate.title())
+                    .put("content", candidate.content());
+        }
+        ArrayNode messages = objectMapper.createArrayNode();
+        messages.addObject().put("role", "system").put(
+                "content",
+                "你是检索精排器。请根据 query 判断每个候选证据是否真正能回答问题。"
+                        + "只返回 JSON 对象，不要 Markdown，不要解释，格式必须是："
+                        + "{\"results\":[{\"index\":0,\"score\":0.95}]}。"
+                        + "score 必须是 0 到 1 之间的小数。"
+        );
+        messages.addObject().put("role", "user").put(
+                "content",
+                "query=" + question + "\ncandidates=" + documents
+        );
+        String text = completeChat(messages, 200);
+        JsonNode root = parseJsonObjectFromModel(text);
+        JsonNode results = root.path("results");
+        if (!results.isArray()) {
+            throw new IllegalStateException("精排响应中没有 results 数组");
+        }
+
+        List<RetrievedEvidence> reranked = new ArrayList<>();
+        for (JsonNode result : results) {
+            int index = result.path("index").asInt(-1);
+            double score = result.path("score").asDouble(-1.0);
+            if (index < 0 || index >= candidates.size() || score < 0.0 || score > 1.0) {
+                continue;
+            }
+            reranked.add(candidates.get(index).withRerankScore(score));
+        }
+        reranked.sort(Comparator.comparingDouble(
+                (RetrievedEvidence candidate) ->
+                        candidate.rerankScore() == null ? -1.0 : candidate.rerankScore()
+        ).reversed());
+        return reranked.stream().limit(topN).toList();
+    }
+
+    /**
+     * 兼容模型偶尔用 ```json 包裹 JSON 的输出，同时仍要求最终根节点是对象。
+     */
+    private JsonNode parseJsonObjectFromModel(String text) throws IOException {
+        String normalized = text.strip()
+                .replaceFirst("^```(?:json)?\\s*", "")
+                .replaceFirst("\\s*```$", "")
+                .strip();
+        int start = normalized.indexOf('{');
+        int end = normalized.lastIndexOf('}');
+        if (start < 0 || end <= start) {
+            throw new IllegalStateException("精排响应不是 JSON 对象：" + text);
+        }
+        return objectMapper.readTree(normalized.substring(start, end + 1));
     }
 
     /**

@@ -9,12 +9,14 @@ import java.util.List;
  * @param sourceTitle        命中的证据标题，多个子问题时用分号连接
  * @param rewrittenQuestion  实际进入 Embedding 的一个或多个完整问题
  * @param plans              供测试和学习观察的意图规划快照
+ * @param evidence           各子问题最终送入答案模型的证据
  */
 public record RoutedKnowledgeAnswer(
         String answer,
         String sourceTitle,
         String rewrittenQuestion,
-        List<IntentPlan> plans
+        List<IntentPlan> plans,
+        List<RetrievedEvidence> evidence
 ) {
 
     /**
@@ -22,5 +24,6 @@ public record RoutedKnowledgeAnswer(
      */
     public RoutedKnowledgeAnswer {
         plans = List.copyOf(plans);
+        evidence = List.copyOf(evidence);
     }
 }

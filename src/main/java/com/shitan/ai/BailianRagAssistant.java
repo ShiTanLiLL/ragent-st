@@ -13,6 +13,7 @@ public final class BailianRagAssistant {
 
     private final BailianClient bailianClient;
     private final KnowledgeRepository knowledgeRepository;
+    private final HybridRetrievalService hybridRetrievalService;
     private final VectorSearch vectorSearch = new VectorSearch();
 
     /**
@@ -21,7 +22,7 @@ public final class BailianRagAssistant {
      * @param bailianClient 负责真实模型 HTTP 协议的客户端
      */
     public BailianRagAssistant(BailianClient bailianClient) {
-        this(bailianClient, null);
+        this(bailianClient, null, null);
     }
 
     /**
@@ -34,8 +35,24 @@ public final class BailianRagAssistant {
             BailianClient bailianClient,
             KnowledgeRepository knowledgeRepository
     ) {
+        this(bailianClient, knowledgeRepository, null);
+    }
+
+    /**
+     * 保存传统直接仓库路径和第 15 课混合检索服务；测试可继续使用前两个构造器。
+     *
+     * @param bailianClient           负责外部模型协议
+     * @param knowledgeRepository     负责旧版单路数据库检索
+     * @param hybridRetrievalService 负责多路召回、融合和精排
+     */
+    public BailianRagAssistant(
+            BailianClient bailianClient,
+            KnowledgeRepository knowledgeRepository,
+            HybridRetrievalService hybridRetrievalService
+    ) {
         this.bailianClient = bailianClient;
         this.knowledgeRepository = knowledgeRepository;
+        this.hybridRetrievalService = hybridRetrievalService;
     }
 
     /**
@@ -121,6 +138,24 @@ public final class BailianRagAssistant {
             String question,
             List<String> knowledgeBaseIds
     ) throws IOException, InterruptedException {
+        if (hybridRetrievalService != null) {
+            List<RetrievedEvidence> evidence = hybridRetrievalService.retrieve(
+                    question,
+                    knowledgeBaseIds
+            );
+            if (evidence.isEmpty()) {
+                return new KnowledgeAnswer("暂时没有找到足够相关的知识。", null, List.of());
+            }
+            String generatedAnswer = bailianClient.generateAnswer(
+                    question,
+                    evidence.stream().map(RetrievedEvidence::toKnowledgeEntry).toList()
+            );
+            return new KnowledgeAnswer(
+                    generatedAnswer,
+                    evidence.get(0).title(),
+                    evidence
+            );
+        }
         KnowledgeRepository repository = requireKnowledgeRepository();
         double[] questionVector = bailianClient.createEmbedding(question);
         KnowledgeEntry evidence = repository.searchTopOneInKnowledgeBases(knowledgeBaseIds, questionVector)

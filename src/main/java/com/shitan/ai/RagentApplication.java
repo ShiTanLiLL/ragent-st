@@ -42,9 +42,10 @@ public class RagentApplication {
     @Bean
     BailianRagAssistant bailianRagAssistant(
             BailianClient bailianClient,
-            KnowledgeRepository knowledgeRepository
+            KnowledgeRepository knowledgeRepository,
+            HybridRetrievalService hybridRetrievalService
     ) {
-        return new BailianRagAssistant(bailianClient, knowledgeRepository);
+        return new BailianRagAssistant(bailianClient, knowledgeRepository, hybridRetrievalService);
     }
 
     /**
@@ -64,6 +65,16 @@ public class RagentApplication {
      */
     @Bean(destroyMethod = "shutdown")
     ExecutorService ingestionExecutor() {
+        return Executors.newFixedThreadPool(2);
+    }
+
+    /**
+     * 创建检索通道专用线程池，让向量 Embedding 和关键词数据库查询能够并行开始。
+     *
+     * @return 最多同时执行两个召回通道的线程池
+     */
+    @Bean(destroyMethod = "shutdown")
+    ExecutorService retrievalExecutor() {
         return Executors.newFixedThreadPool(2);
     }
 }

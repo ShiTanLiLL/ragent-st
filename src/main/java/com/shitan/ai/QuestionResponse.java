@@ -10,13 +10,15 @@ import java.util.List;
  * @param conversationId 本轮问答所属会话；旧的无记忆请求为 null
  * @param rewrittenQuestion 带上历史上下文后交给检索的独立问题
  * @param intentPlans 本轮拆问和知识库作用域规划，便于学习阶段观察
+ * @param evidence 本轮实际送入答案模型的有界证据
  */
 public record QuestionResponse(
         String answer,
         String sourceTitle,
         String conversationId,
         String rewrittenQuestion,
-        List<IntentPlan> intentPlans
+        List<IntentPlan> intentPlans,
+        List<RetrievedEvidence> evidence
 ) {
 
     /**
@@ -24,6 +26,7 @@ public record QuestionResponse(
      */
     public QuestionResponse {
         intentPlans = List.copyOf(intentPlans);
+        evidence = List.copyOf(evidence);
     }
 
     /**
@@ -33,6 +36,6 @@ public record QuestionResponse(
      * @param sourceTitle 证据来源标题
      */
     public QuestionResponse(String answer, String sourceTitle) {
-        this(answer, sourceTitle, null, null, List.of());
+        this(answer, sourceTitle, null, null, List.of(), List.of());
     }
 }

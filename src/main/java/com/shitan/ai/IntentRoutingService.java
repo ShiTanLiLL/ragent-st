@@ -49,12 +49,14 @@ public class IntentRoutingService {
                         plan.clarification(),
                         null,
                         rewritten,
-                        plans
+                        plans,
+                        List.of()
                 );
             }
         }
 
         List<String> answers = new ArrayList<>();
+        List<RetrievedEvidence> evidence = new ArrayList<>();
         StringJoiner sources = new StringJoiner("；");
         StringJoiner rewrittenQuestions = new StringJoiner("\n");
         for (IntentPlan plan : plans) {
@@ -63,6 +65,7 @@ public class IntentRoutingService {
                     plan.knowledgeBaseIds()
             );
             answers.add(answer.content());
+            evidence.addAll(answer.evidence());
             if (answer.sourceTitle() != null && !answer.sourceTitle().isBlank()) {
                 sources.add(answer.sourceTitle());
             }
@@ -72,7 +75,8 @@ public class IntentRoutingService {
                 combineAnswers(answers),
                 sources.length() == 0 ? null : sources.toString(),
                 rewrittenQuestions.toString(),
-                plans
+                plans,
+                evidence
         );
     }
 
