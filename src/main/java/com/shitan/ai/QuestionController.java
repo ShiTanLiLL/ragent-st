@@ -74,7 +74,8 @@ public class QuestionController {
         if (hasUploadedKnowledgeBase(request)) {
             answer = assistant.answerFromDatabase(
                     request.question(),
-                    request.knowledgeBaseId()
+                    request.knowledgeBaseId(),
+                    ModelTier.fromText(request.modelTier())
             );
         } else {
             answer = assistant.answer(request.question(), knowledgeEntries);

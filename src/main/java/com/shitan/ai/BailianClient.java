@@ -91,7 +91,7 @@ public final class BailianClient {
 
     public String generateAnswer(String question, KnowledgeEntry evidence)
             throws IOException, InterruptedException {
-        return generateAnswer(question, List.of(evidence));
+        return generateAnswer(question, List.of(evidence), CHAT_MODEL);
     }
 
     /**
@@ -105,8 +105,26 @@ public final class BailianClient {
      */
     public String generateAnswer(String question, List<KnowledgeEntry> evidences)
             throws IOException, InterruptedException {
+        return generateAnswer(question, evidences, CHAT_MODEL);
+    }
+
+    /**
+     * 用调用方选定的模型生成答案；模型路由层只依赖这个入口，不接触 HTTP JSON 细节。
+     *
+     * @param question  用户问题
+     * @param evidences 已通过检索质量控制的证据
+     * @param model     百炼 Chat 模型名
+     * @return 模型回答正文
+     * @throws IOException          网络通信或 JSON 解析失败
+     * @throws InterruptedException 等待百炼响应时线程被中断
+     */
+    public String generateAnswer(
+            String question,
+            List<KnowledgeEntry> evidences,
+            String model
+    ) throws IOException, InterruptedException {
         ObjectNode requestBody = objectMapper.createObjectNode();
-        requestBody.put("model", CHAT_MODEL);
+        requestBody.put("model", model);
 
         // Chat Completions 要求 messages 是数组，每个元素都包含 role 和 content。
         ArrayNode messages = requestBody.putArray("messages");

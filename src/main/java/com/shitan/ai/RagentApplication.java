@@ -43,9 +43,15 @@ public class RagentApplication {
     BailianRagAssistant bailianRagAssistant(
             BailianClient bailianClient,
             KnowledgeRepository knowledgeRepository,
-            HybridRetrievalService hybridRetrievalService
+            HybridRetrievalService hybridRetrievalService,
+            ModelRoutingService modelRoutingService
     ) {
-        return new BailianRagAssistant(bailianClient, knowledgeRepository, hybridRetrievalService);
+        return new BailianRagAssistant(
+                bailianClient,
+                knowledgeRepository,
+                hybridRetrievalService,
+                modelRoutingService
+        );
     }
 
     /**

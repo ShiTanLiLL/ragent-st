@@ -14,6 +14,7 @@ public final class BailianRagAssistant {
     private final BailianClient bailianClient;
     private final KnowledgeRepository knowledgeRepository;
     private final HybridRetrievalService hybridRetrievalService;
+    private final ModelRoutingService modelRoutingService;
     private final VectorSearch vectorSearch = new VectorSearch();
 
     /**
@@ -22,7 +23,7 @@ public final class BailianRagAssistant {
      * @param bailianClient 负责真实模型 HTTP 协议的客户端
      */
     public BailianRagAssistant(BailianClient bailianClient) {
-        this(bailianClient, null, null);
+        this(bailianClient, null, null, null);
     }
 
     /**
@@ -35,7 +36,7 @@ public final class BailianRagAssistant {
             BailianClient bailianClient,
             KnowledgeRepository knowledgeRepository
     ) {
-        this(bailianClient, knowledgeRepository, null);
+        this(bailianClient, knowledgeRepository, null, null);
     }
 
     /**
@@ -50,9 +51,22 @@ public final class BailianRagAssistant {
             KnowledgeRepository knowledgeRepository,
             HybridRetrievalService hybridRetrievalService
     ) {
+        this(bailianClient, knowledgeRepository, hybridRetrievalService, null);
+    }
+
+    /**
+     * 保存旧版检索路径、混合检索和模型路由；旧构造器仍服务于前几课的直接测试。
+     */
+    public BailianRagAssistant(
+            BailianClient bailianClient,
+            KnowledgeRepository knowledgeRepository,
+            HybridRetrievalService hybridRetrievalService,
+            ModelRoutingService modelRoutingService
+    ) {
         this.bailianClient = bailianClient;
         this.knowledgeRepository = knowledgeRepository;
         this.hybridRetrievalService = hybridRetrievalService;
+        this.modelRoutingService = modelRoutingService;
     }
 
     /**
@@ -119,10 +133,21 @@ public final class BailianRagAssistant {
             String question,
             String knowledgeBaseId
     ) throws IOException, InterruptedException {
+        return answerFromDatabase(question, knowledgeBaseId, ModelTier.STANDARD);
+    }
+
+    /**
+     * 接受单个知识库编号并附带模型档位，内部仍统一转换成作用域列表。
+     */
+    public KnowledgeAnswer answerFromDatabase(
+            String question,
+            String knowledgeBaseId,
+            ModelTier modelTier
+    ) throws IOException, InterruptedException {
         List<String> knowledgeBaseIds = knowledgeBaseId == null || knowledgeBaseId.isBlank()
                 ? List.of()
                 : List.of(knowledgeBaseId);
-        return answerFromDatabase(question, knowledgeBaseIds);
+        return answerFromDatabase(question, knowledgeBaseIds, modelTier);
     }
 
     /**
@@ -138,6 +163,17 @@ public final class BailianRagAssistant {
             String question,
             List<String> knowledgeBaseIds
     ) throws IOException, InterruptedException {
+        return answerFromDatabase(question, knowledgeBaseIds, ModelTier.STANDARD);
+    }
+
+    /**
+     * 在固定知识库作用域中完成混合检索，并按调用方选择的模型档位生成回答。
+     */
+    public KnowledgeAnswer answerFromDatabase(
+            String question,
+            List<String> knowledgeBaseIds,
+            ModelTier modelTier
+    ) throws IOException, InterruptedException {
         if (hybridRetrievalService != null) {
             List<RetrievedEvidence> evidence = hybridRetrievalService.retrieve(
                     question,
@@ -146,10 +182,12 @@ public final class BailianRagAssistant {
             if (evidence.isEmpty()) {
                 return new KnowledgeAnswer("暂时没有找到足够相关的知识。", null, List.of());
             }
-            String generatedAnswer = bailianClient.generateAnswer(
-                    question,
-                    evidence.stream().map(RetrievedEvidence::toKnowledgeEntry).toList()
-            );
+            List<KnowledgeEntry> answerEvidence = evidence.stream()
+                    .map(RetrievedEvidence::toKnowledgeEntry)
+                    .toList();
+            String generatedAnswer = modelRoutingService == null
+                    ? bailianClient.generateAnswer(question, answerEvidence)
+                    : modelRoutingService.generate(modelTier, question, answerEvidence);
             return new KnowledgeAnswer(
                     generatedAnswer,
                     evidence.get(0).title(),

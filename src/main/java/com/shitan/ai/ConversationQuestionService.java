@@ -49,7 +49,8 @@ public class ConversationQuestionService {
         RoutedKnowledgeAnswer routedAnswer = intentRoutingService.answer(
                 request.question(),
                 request.knowledgeBaseId(),
-                memory
+                memory,
+                ModelTier.fromText(request.modelTier())
         );
         memoryService.append(
                 conversationId,

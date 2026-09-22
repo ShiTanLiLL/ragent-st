@@ -40,6 +40,18 @@ public class IntentRoutingService {
             String requestedBaseId,
             ConversationMemory memory
     ) throws Exception {
+        return answer(question, requestedBaseId, memory, ModelTier.STANDARD);
+    }
+
+    /**
+     * 在既有规划链上附带模型档位；规划和检索范围不因模型降级而改变。
+     */
+    public RoutedKnowledgeAnswer answer(
+            String question,
+            String requestedBaseId,
+            ConversationMemory memory,
+            ModelTier modelTier
+    ) throws Exception {
         String rewritten = assistant.rewriteQuestionIfNeeded(question, memory);
         List<IntentPlan> plans = intentPlanner.plan(rewritten, requestedBaseId);
 
@@ -62,7 +74,8 @@ public class IntentRoutingService {
         for (IntentPlan plan : plans) {
             KnowledgeAnswer answer = assistant.answerFromDatabase(
                     plan.question(),
-                    plan.knowledgeBaseIds()
+                    plan.knowledgeBaseIds(),
+                    modelTier
             );
             answers.add(answer.content());
             evidence.addAll(answer.evidence());
