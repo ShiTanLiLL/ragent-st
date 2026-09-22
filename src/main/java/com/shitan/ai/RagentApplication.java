@@ -6,6 +6,8 @@ import org.springframework.context.annotation.Bean;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.time.Duration;
+import org.springframework.beans.factory.annotation.Value;
 
 /**
  * 教学项目的启动入口，负责启动 Spring 容器和内置 Web 服务器。
@@ -82,5 +84,27 @@ public class RagentApplication {
     @Bean(destroyMethod = "shutdown")
     ExecutorService retrievalExecutor() {
         return Executors.newFixedThreadPool(2);
+    }
+
+    /**
+     * 创建模型调用的有界名额；等待超时后直接告诉调用方稍后重试，不让线程无限排队。
+     */
+    @Bean("modelAdmissionGate")
+    AdmissionGate modelAdmissionGate(
+            @Value("${ragent.capacity.model-concurrency:4}") int capacity,
+            @Value("${ragent.capacity.model-wait-ms:1000}") long waitMillis
+    ) {
+        return new AdmissionGate(capacity, Duration.ofMillis(waitMillis));
+    }
+
+    /**
+     * 创建摄取任务的有界名额；线程池大小和业务名额分别控制执行线程与外部模型压力。
+     */
+    @Bean("ingestionAdmissionGate")
+    AdmissionGate ingestionAdmissionGate(
+            @Value("${ragent.capacity.ingestion-concurrency:2}") int capacity,
+            @Value("${ragent.capacity.ingestion-wait-ms:100}") long waitMillis
+    ) {
+        return new AdmissionGate(capacity, Duration.ofMillis(waitMillis));
     }
 }

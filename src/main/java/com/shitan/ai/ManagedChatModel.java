@@ -99,6 +99,15 @@ public final class ManagedChatModel {
     }
 
     /**
+     * 外部容量闸门没有放行时归还 HALF_OPEN 探测资格；这不是模型失败，不能把候选熔断。
+     */
+    public synchronized void releaseProbeWithoutCall() {
+        if (state == ModelHealthState.HALF_OPEN) {
+            halfOpenProbeInFlight = false;
+        }
+    }
+
+    /**
      * 返回测试和观测使用的当前健康状态。
      */
     public ModelHealthState state() {

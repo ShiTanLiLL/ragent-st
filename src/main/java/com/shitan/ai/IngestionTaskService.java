@@ -1,6 +1,7 @@
 package com.shitan.ai;
 
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -20,6 +21,7 @@ public class IngestionTaskService {
     private final IngestionTaskRepository taskRepository;
     private final IngestionPipelineRunner pipelineRunner;
     private final Executor ingestionExecutor;
+    private final AdmissionGate ingestionAdmissionGate;
 
     /**
      * 保存知识处理服务、任务仓库和专用后台执行器。
@@ -35,10 +37,26 @@ public class IngestionTaskService {
             IngestionPipelineRunner pipelineRunner,
             @Qualifier("ingestionExecutor") Executor ingestionExecutor
     ) {
+        this(knowledgeManagementService, taskRepository, pipelineRunner, ingestionExecutor,
+                AdmissionGate.unbounded());
+    }
+
+    /**
+     * 保存后台执行器和摄取名额闸门；旧构造器使用无限闸门保持前面课程测试兼容。
+     */
+    @Autowired
+    public IngestionTaskService(
+            KnowledgeManagementService knowledgeManagementService,
+            IngestionTaskRepository taskRepository,
+            IngestionPipelineRunner pipelineRunner,
+            @Qualifier("ingestionExecutor") Executor ingestionExecutor,
+            @Qualifier("ingestionAdmissionGate") AdmissionGate ingestionAdmissionGate
+    ) {
         this.knowledgeManagementService = knowledgeManagementService;
         this.taskRepository = taskRepository;
         this.pipelineRunner = pipelineRunner;
         this.ingestionExecutor = ingestionExecutor;
+        this.ingestionAdmissionGate = ingestionAdmissionGate;
     }
 
     /**
@@ -49,28 +67,34 @@ public class IngestionTaskService {
      * @return 可用于查询进度的任务和文档编号
      */
     public IngestionSubmission submit(String knowledgeBaseId, MultipartFile file) {
-        KnowledgeDocument document = knowledgeManagementService.prepareUpload(
-                knowledgeBaseId,
-                file
-        );
-        IngestionTask task = new IngestionTask(
-                UUID.randomUUID().toString(),
-                document.id(),
-                IngestionSourceType.UPLOAD,
-                document.storedPath(),
-                IngestionPipelineCatalog.UPLOAD_PIPELINE,
-                IngestionTaskStatus.PENDING,
-                null,
-                1,
-                null,
-                null,
-                null
-        );
-        taskRepository.insert(task);
+        AdmissionGate.Lease lease = acquireIngestionLease();
+        try {
+            KnowledgeDocument document = knowledgeManagementService.prepareUpload(
+                    knowledgeBaseId,
+                    file
+            );
+            IngestionTask task = new IngestionTask(
+                    UUID.randomUUID().toString(),
+                    document.id(),
+                    IngestionSourceType.UPLOAD,
+                    document.storedPath(),
+                    IngestionPipelineCatalog.UPLOAD_PIPELINE,
+                    IngestionTaskStatus.PENDING,
+                    null,
+                    1,
+                    null,
+                    null,
+                    null
+            );
+            taskRepository.insert(task);
 
-        // execute 只把工作交给线程池；当前 HTTP 请求不等待 Runnable 执行完。
-        ingestionExecutor.execute(() -> execute(task.id()));
-        return new IngestionSubmission(task.id(), document.id(), IngestionTaskStatus.PENDING);
+            // execute 只把工作交给线程池；当前 HTTP 请求不等待 Runnable 执行完。
+            ingestionExecutor.execute(() -> execute(task.id(), lease));
+            return new IngestionSubmission(task.id(), document.id(), IngestionTaskStatus.PENDING);
+        } catch (RuntimeException exception) {
+            lease.close();
+            throw exception;
+        }
     }
 
     /**
@@ -90,26 +114,32 @@ public class IngestionTaskService {
         } catch (IllegalArgumentException exception) {
             throw new IllegalArgumentException("远程文档地址格式错误", exception);
         }
-        KnowledgeDocument document = knowledgeManagementService.prepareRemote(
-                knowledgeBaseId,
-                sourceUri
-        );
-        IngestionTask task = new IngestionTask(
-                UUID.randomUUID().toString(),
-                document.id(),
-                IngestionSourceType.URL,
-                sourceUri.toString(),
-                IngestionPipelineCatalog.URL_PIPELINE,
-                IngestionTaskStatus.PENDING,
-                null,
-                1,
-                null,
-                null,
-                null
-        );
-        taskRepository.insert(task);
-        ingestionExecutor.execute(() -> execute(task.id()));
-        return new IngestionSubmission(task.id(), document.id(), IngestionTaskStatus.PENDING);
+        AdmissionGate.Lease lease = acquireIngestionLease();
+        try {
+            KnowledgeDocument document = knowledgeManagementService.prepareRemote(
+                    knowledgeBaseId,
+                    sourceUri
+            );
+            IngestionTask task = new IngestionTask(
+                    UUID.randomUUID().toString(),
+                    document.id(),
+                    IngestionSourceType.URL,
+                    sourceUri.toString(),
+                    IngestionPipelineCatalog.URL_PIPELINE,
+                    IngestionTaskStatus.PENDING,
+                    null,
+                    1,
+                    null,
+                    null,
+                    null
+            );
+            taskRepository.insert(task);
+            ingestionExecutor.execute(() -> execute(task.id(), lease));
+            return new IngestionSubmission(task.id(), document.id(), IngestionTaskStatus.PENDING);
+        } catch (RuntimeException exception) {
+            lease.close();
+            throw exception;
+        }
     }
 
     /**
@@ -141,19 +171,25 @@ public class IngestionTaskService {
      * @return 仍使用原 taskId 和 documentId 的新一次受理结果
      */
     public IngestionSubmission retry(String taskId) {
-        IngestionTask beforeRetry = get(taskId);
-        if (!taskRepository.resetFailedForRetry(taskId)) {
-            throw new IllegalStateException(
-                    "只有 failed 任务可以重试，当前状态：" + beforeRetry.status().code()
-            );
-        }
+        AdmissionGate.Lease lease = acquireIngestionLease();
+        try {
+            IngestionTask beforeRetry = get(taskId);
+            if (!taskRepository.resetFailedForRetry(taskId)) {
+                throw new IllegalStateException(
+                        "只有 failed 任务可以重试，当前状态：" + beforeRetry.status().code()
+                );
+            }
 
-        ingestionExecutor.execute(() -> execute(taskId));
-        return new IngestionSubmission(
-                taskId,
-                beforeRetry.documentId(),
-                IngestionTaskStatus.PENDING
-        );
+            ingestionExecutor.execute(() -> execute(taskId, lease));
+            return new IngestionSubmission(
+                    taskId,
+                    beforeRetry.documentId(),
+                    IngestionTaskStatus.PENDING
+            );
+        } catch (RuntimeException exception) {
+            lease.close();
+            throw exception;
+        }
     }
 
     /**
@@ -164,14 +200,14 @@ public class IngestionTaskService {
      *
      * @param taskId 要执行的任务编号
      */
-    private void execute(String taskId) {
-        if (!taskRepository.claimPending(taskId)) {
-            return;
-        }
-
-        IngestionTask task = get(taskId);
-
+    private void execute(String taskId, AdmissionGate.Lease lease) {
+        IngestionTask task = null;
         try {
+            if (!taskRepository.claimPending(taskId)) {
+                return;
+            }
+
+            task = get(taskId);
             KnowledgeDocument document = knowledgeManagementService.markRunning(task.documentId());
             pipelineRunner.run(IngestionContext.start(task, document));
             taskRepository.completeTask(task.id());
@@ -181,8 +217,28 @@ public class IngestionTaskService {
                 Thread.currentThread().interrupt();
             }
             String message = knowledgeManagementService.readableMessage(exception);
-            knowledgeManagementService.markFailed(task.documentId(), message);
-            taskRepository.failTask(task.id(), message);
+            if (task != null) {
+                knowledgeManagementService.markFailed(task.documentId(), message);
+                taskRepository.failTask(task.id(), message);
+            }
+        } finally {
+            lease.close();
+        }
+    }
+
+    /**
+     * 等待一个摄取名额；超时不创建 pending 文档，避免留下没人执行的任务。
+     */
+    private AdmissionGate.Lease acquireIngestionLease() {
+        try {
+            AdmissionGate.Lease lease = ingestionAdmissionGate.tryAcquire();
+            if (lease == null) {
+                throw new IllegalStateException("摄取并发名额已用尽，请稍后重试");
+            }
+            return lease;
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("等待摄取名额时线程被中断", exception);
         }
     }
 }

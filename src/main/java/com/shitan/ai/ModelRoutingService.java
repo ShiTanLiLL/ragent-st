@@ -20,6 +20,7 @@ public class ModelRoutingService {
 
     private final ChatModelInvoker invoker;
     private final List<ManagedChatModel> candidates;
+    private final AdmissionGate admissionGate;
 
     /**
      * 从配置读取候选，格式为 fast=qwen-turbo-latest,standard=qwen-plus-latest,deep=qwen-max-latest。
@@ -28,17 +29,30 @@ public class ModelRoutingService {
     @Autowired
     public ModelRoutingService(
             BailianChatModelInvoker invoker,
-            @Value("${ragent.chat-models:standard=qwen-plus-latest}") String configuredModels
+            @Value("${ragent.chat-models:standard=qwen-plus-latest}") String configuredModels,
+            @org.springframework.beans.factory.annotation.Qualifier("modelAdmissionGate") AdmissionGate admissionGate
     ) {
-        this(invoker, parseCandidates(configuredModels));
+        this(invoker, parseCandidates(configuredModels), admissionGate);
     }
 
     /**
      * 为测试或未来配置入口保存明确的候选列表。
      */
     public ModelRoutingService(ChatModelInvoker invoker, List<ManagedChatModel> candidates) {
+        this(invoker, candidates, AdmissionGate.unbounded());
+    }
+
+    /**
+     * 保存候选及模型并发名额；测试可注入小闸门观察排队和超时。
+     */
+    public ModelRoutingService(
+            ChatModelInvoker invoker,
+            List<ManagedChatModel> candidates,
+            AdmissionGate admissionGate
+    ) {
         this.invoker = invoker;
         this.candidates = List.copyOf(candidates);
+        this.admissionGate = admissionGate;
         if (this.candidates.isEmpty()) {
             throw new IllegalArgumentException("至少需要一个模型候选");
         }
@@ -61,6 +75,19 @@ public class ModelRoutingService {
             if (!candidate.tryAcquire()) {
                 continue;
             }
+            AdmissionGate.Lease lease;
+            try {
+                lease = admissionGate.tryAcquire();
+            } catch (InterruptedException exception) {
+                // 没有真正调用模型，不能把 HALF_OPEN 探测永久占住。
+                candidate.releaseProbeWithoutCall();
+                throw exception;
+            }
+            if (lease == null) {
+                // 容量不足不是模型故障；把候选刚占用的探测资格还回去。
+                candidate.releaseProbeWithoutCall();
+                throw new IllegalStateException("模型并发名额已用尽，请稍后重试");
+            }
             try {
                 String answer = invoker.invoke(candidate.model(), question, evidences);
                 if (answer == null || answer.isBlank()) {
@@ -77,6 +104,8 @@ public class ModelRoutingService {
             } catch (RuntimeException exception) {
                 candidate.markFailure();
                 lastFailure = exception;
+            } finally {
+                lease.close();
             }
         }
         if (lastFailure instanceof IOException ioException) {
