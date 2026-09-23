@@ -292,6 +292,25 @@ public final class BailianClient {
     }
 
     /**
+     * 为 Agent 决策发送一组明确的系统规则和当前状态；返回内容由上层按自己的 JSON 契约解析。
+     *
+     * @param systemInstruction 工具调用边界和返回格式
+     * @param currentState      用户目标、可用工具和历次 Observation
+     * @return 模型生成的单个决策 JSON 文本
+     */
+    public String decideAgentStep(String systemInstruction, String currentState)
+            throws IOException, InterruptedException {
+        ArrayNode messages = objectMapper.createArrayNode();
+        messages.addObject()
+                .put("role", "system")
+                .put("content", systemInstruction);
+        messages.addObject()
+                .put("role", "user")
+                .put("content", currentState);
+        return completeChat(messages, 350);
+    }
+
+    /**
      * 把有界记忆转换为 Chat Completions 的 messages 数组；摘要用 system 表达，原文保留角色。
      *
      * @param messages 要继续填充的 JSON 数组
