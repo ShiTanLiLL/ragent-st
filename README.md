@@ -2,7 +2,7 @@
 
 这是 Ragent 的渐进式教学重建项目，不是原项目的精简副本。
 
-第 1～18 课已经完成。第 15 课加入混合检索与精排，第 16 课增加模型路由和失败切换，第 17 课保护单机容量，第 18 课记录来源、反馈和问答节点追踪；第 19 课正在增加能动态选择知识与订单工具的基础 Agent。
+第 1～19 课已经完成。第 19 课加入能动态选择知识与订单工具的基础 Agent；第 20 课正在通过 MCP 接入独立工具服务，并为写工具增加 Skill、冻结参数、人工确认和重复执行保护。
 
 课程资料位于项目内的 `tutorial/`，长期约束见 `tutorial/工作守则.md`。
 
@@ -55,3 +55,14 @@ docker compose up -d
 第 18 课打开 `RagObservabilityApiLiveIT` 点击类名旁绿色按钮，观察同一文档多个 Chunk 聚合成一个来源、成功 Run 的节点时间线、反馈关联和失败 Run 定位；测试会自动启动 pgvector 并真实调用百炼。
 
 第 19 课打开 `AgentApiLiveIT` 点击类名旁绿色按钮，一次观察“知识工具 → 订单工具 → 回答”、带旧 `sessionId` 恢复步骤和4次迭代上限。测试只脚本化模型的下一步选择，知识上传、数据库、Embedding、检索与 RAG 回答仍走真实实现。
+
+第 20 课打开 `McpAgentApiLiveIT` 点击类名旁绿色按钮，一次观察“发现远端工具 → 只读查询 → 加载 Skill → 冻结写参数 → 人工批准 → 远端执行 → 最终回答”。测试会自动启动真实 MCP HTTP 服务和临时 pgvector，不调用百炼；重点检查确认前没有远端写入，以及重复批准返回409且不会再次写入。
+
+第 20 课手工运行完整部署时，先用 `docker compose up -d` 启动数据库；再在第二个终端运行：
+
+```bash
+mvn -q -DskipTests compile org.codehaus.mojo:exec-maven-plugin:3.5.1:java \
+  -Dexec.mainClass=com.shitan.ai.mcp.McpOrderServerApplication
+```
+
+最后在第三个终端执行 `mvn spring-boot:run`。默认主应用连接 `http://127.0.0.1:8091/mcp`，也可以通过持久环境变量 `RAGENT_MCP_URL` 覆盖。启动后访问 `http://localhost:8080/api/system/health`，应看到数据库和 MCP 均可达、总状态为 `UP`。

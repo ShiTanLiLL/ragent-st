@@ -110,6 +110,96 @@ public class AgentRepository {
     }
 
     /**
+     * 冻结一次待确认写操作的工具名和 JSON 参数，后续确认请求不能重新提交这些字段。
+     */
+    public void insertConfirmation(
+            String id,
+            String sessionId,
+            String userId,
+            AgentDecision decision,
+            String toolInput
+    ) {
+        jdbcTemplate.update("""
+                INSERT INTO agent_confirmation(
+                    id, session_id, user_id, tool_name, tool_input,
+                    decision_summary, status
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending')
+                """, id, sessionId, userId, decision.toolName(), toolInput,
+                decision.decisionSummary());
+    }
+
+    /**
+     * 按确认编号和用户读取冻结动作，避免其他用户查看或批准该操作。
+     */
+    public Optional<AgentConfirmation> findConfirmation(String id, String userId) {
+        return jdbcTemplate.query("""
+                SELECT id, session_id, user_id, tool_name, tool_input,
+                       decision_summary, status, observation, created_at, updated_at
+                FROM agent_confirmation
+                WHERE id = ? AND user_id = ?
+                """, this::mapConfirmation, id, userId).stream().findFirst();
+    }
+
+    /**
+     * 返回会话最近确认，供 waiting 和完成响应展示同一张确认卡的最终状态。
+     */
+    public Optional<AgentConfirmation> findLatestConfirmation(String sessionId) {
+        return jdbcTemplate.query("""
+                SELECT id, session_id, user_id, tool_name, tool_input,
+                       decision_summary, status, observation, created_at, updated_at
+                FROM agent_confirmation
+                WHERE session_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """, this::mapConfirmation, sessionId).stream().findFirst();
+    }
+
+    /**
+     * 原子地把 pending 改成 executing；并发点击确认时只有一个请求能取得执行权。
+     */
+    public boolean claimConfirmation(String id, String userId) {
+        return jdbcTemplate.update("""
+                UPDATE agent_confirmation
+                SET status = 'executing', updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND user_id = ? AND status = 'pending'
+                """, id, userId) == 1;
+    }
+
+    /**
+     * 记录用户拒绝，返回值用于识别重复确认或已被另一请求处理的情况。
+     */
+    public boolean denyConfirmation(String id, String userId) {
+        return jdbcTemplate.update("""
+                UPDATE agent_confirmation
+                SET status = 'denied', observation = '用户拒绝执行',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND user_id = ? AND status = 'pending'
+                """, id, userId) == 1;
+    }
+
+    /**
+     * 保存已经获批动作的远端 Observation，确认状态描述授权结果而不是模型决定。
+     */
+    public void approveConfirmation(String id, String observation) {
+        jdbcTemplate.update("""
+                UPDATE agent_confirmation
+                SET status = 'approved', observation = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = 'executing'
+                """, observation, id);
+    }
+
+    /**
+     * 执行恢复路径自身失败时结束 executing，避免确认卡永久显示仍在执行。
+     */
+    public void failConfirmation(String id, String observation) {
+        jdbcTemplate.update("""
+                UPDATE agent_confirmation
+                SET status = 'failed', observation = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = 'executing'
+                """, observation, id);
+    }
+
+    /**
      * 映射 Agent 会话数据库行。
      */
     private AgentSession mapSession(ResultSet resultSet, int rowNumber) throws SQLException {
@@ -139,6 +229,24 @@ public class AgentRepository {
                 resultSet.getString("tool_input"),
                 resultSet.getString("observation"),
                 resultSet.getTimestamp("created_at").toInstant()
+        );
+    }
+
+    /**
+     * 映射一张写操作确认卡及其冻结参数和最终处理状态。
+     */
+    private AgentConfirmation mapConfirmation(ResultSet resultSet, int rowNumber) throws SQLException {
+        return new AgentConfirmation(
+                resultSet.getString("id"),
+                resultSet.getString("session_id"),
+                resultSet.getString("user_id"),
+                resultSet.getString("tool_name"),
+                resultSet.getString("tool_input"),
+                resultSet.getString("decision_summary"),
+                resultSet.getString("status"),
+                resultSet.getString("observation"),
+                resultSet.getTimestamp("created_at").toInstant(),
+                resultSet.getTimestamp("updated_at").toInstant()
         );
     }
 }

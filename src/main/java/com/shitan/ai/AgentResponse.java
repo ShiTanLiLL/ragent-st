@@ -9,8 +9,16 @@ public record AgentResponse(
         String sessionId,
         String status,
         String answer,
-        List<AgentStep> steps
+        List<AgentStep> steps,
+        AgentConfirmation confirmation
 ) {
+
+    /**
+     * 兼容没有确认卡的第19课响应构造方式。
+     */
+    public AgentResponse(String sessionId, String status, String answer, List<AgentStep> steps) {
+        this(sessionId, status, answer, steps, null);
+    }
 
     /**
      * 固定步骤快照，避免返回期间后台代码修改列表。

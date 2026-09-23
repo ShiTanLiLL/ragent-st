@@ -43,4 +43,15 @@ public class AgentController {
     ) {
         return agentService.get(sessionId, userId);
     }
+
+    /**
+     * 批准或拒绝一张写工具确认卡；请求体不能重传工具名和参数。
+     */
+    @PostMapping("/confirmations/{confirmationId}")
+    public AgentResponse confirm(
+            @PathVariable("confirmationId") String confirmationId,
+            @Valid @RequestBody AgentConfirmationRequest request
+    ) throws Exception {
+        return agentService.confirm(confirmationId, request);
+    }
 }
