@@ -11,6 +11,9 @@ import java.util.List;
  * @param rewrittenQuestion 带上历史上下文后交给检索的独立问题
  * @param intentPlans 本轮拆问和知识库作用域规划，便于学习阶段观察
  * @param evidence 本轮实际送入答案模型的有界证据
+ * @param sources 按文档去重、适合展示给用户的稳定来源
+ * @param runId 本轮可查询节点追踪的运行编号
+ * @param assistantMessageId 最终回答在会话消息表中的编号，可用于提交反馈
  */
 public record QuestionResponse(
         String answer,
@@ -18,7 +21,10 @@ public record QuestionResponse(
         String conversationId,
         String rewrittenQuestion,
         List<IntentPlan> intentPlans,
-        List<RetrievedEvidence> evidence
+        List<RetrievedEvidence> evidence,
+        List<SourceReference> sources,
+        String runId,
+        Long assistantMessageId
 ) {
 
     /**
@@ -27,6 +33,7 @@ public record QuestionResponse(
     public QuestionResponse {
         intentPlans = List.copyOf(intentPlans);
         evidence = List.copyOf(evidence);
+        sources = List.copyOf(sources);
     }
 
     /**
@@ -36,6 +43,6 @@ public record QuestionResponse(
      * @param sourceTitle 证据来源标题
      */
     public QuestionResponse(String answer, String sourceTitle) {
-        this(answer, sourceTitle, null, null, List.of(), List.of());
+        this(answer, sourceTitle, null, null, List.of(), List.of(), List.of(), null, null);
     }
 }

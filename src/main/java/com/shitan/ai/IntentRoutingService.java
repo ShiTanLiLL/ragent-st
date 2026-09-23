@@ -14,6 +14,7 @@ public class IntentRoutingService {
 
     private final IntentPlanner intentPlanner;
     private final BailianRagAssistant assistant;
+    private final RagTraceService traceService;
 
     /**
      * 保存规划器和既有 RAG 助手；本类不直接访问 JDBC 和百炼 JSON。
@@ -21,9 +22,14 @@ public class IntentRoutingService {
      * @param intentPlanner 负责拆分问题和给出知识库候选
      * @param assistant     负责 Embedding、pgvector 和最终回答
      */
-    public IntentRoutingService(IntentPlanner intentPlanner, BailianRagAssistant assistant) {
+    public IntentRoutingService(
+            IntentPlanner intentPlanner,
+            BailianRagAssistant assistant,
+            RagTraceService traceService
+    ) {
         this.intentPlanner = intentPlanner;
         this.assistant = assistant;
+        this.traceService = traceService;
     }
 
     /**
@@ -52,8 +58,38 @@ public class IntentRoutingService {
             ConversationMemory memory,
             ModelTier modelTier
     ) throws Exception {
-        String rewritten = assistant.rewriteQuestionIfNeeded(question, memory);
-        List<IntentPlan> plans = intentPlanner.plan(rewritten, requestedBaseId);
+        return answer(question, requestedBaseId, memory, modelTier, null);
+    }
+
+    /**
+     * 在一次 Run 中分别记录改写、规划，以及每个子问题的检索和生成。
+     */
+    public RoutedKnowledgeAnswer answer(
+            String question,
+            String requestedBaseId,
+            ConversationMemory memory,
+            ModelTier modelTier,
+            String runId
+    ) throws Exception {
+        String rewritten = runId == null
+                ? assistant.rewriteQuestionIfNeeded(question, memory)
+                : traceService.recordNode(
+                        runId,
+                        "rewrite_question",
+                        "hasContext=" + memory.hasContext() + ", question=" + question,
+                        () -> assistant.rewriteQuestionIfNeeded(question, memory),
+                        result -> "rewritten=" + result
+                );
+        List<IntentPlan> plans = runId == null
+                ? intentPlanner.plan(rewritten, requestedBaseId)
+                : traceService.recordNode(
+                        runId,
+                        "intent_plan",
+                        "rewritten=" + rewritten + ", requestedBase=" + requestedBaseId,
+                        () -> intentPlanner.plan(rewritten, requestedBaseId),
+                        result -> "plans=" + result.size() + ", scopes="
+                                + result.stream().map(IntentPlan::knowledgeBaseIds).toList()
+                );
 
         for (IntentPlan plan : plans) {
             if (plan.clarificationRequired()) {
@@ -71,12 +107,21 @@ public class IntentRoutingService {
         List<RetrievedEvidence> evidence = new ArrayList<>();
         StringJoiner sources = new StringJoiner("；");
         StringJoiner rewrittenQuestions = new StringJoiner("\n");
-        for (IntentPlan plan : plans) {
-            KnowledgeAnswer answer = assistant.answerFromDatabase(
-                    plan.question(),
-                    plan.knowledgeBaseIds(),
-                    modelTier
-            );
+        for (int index = 0; index < plans.size(); index++) {
+            IntentPlan plan = plans.get(index);
+            KnowledgeAnswer answer = runId == null
+                    ? assistant.answerFromDatabase(
+                            plan.question(),
+                            plan.knowledgeBaseIds(),
+                            modelTier
+                    )
+                    : assistant.answerFromDatabase(
+                            plan.question(),
+                            plan.knowledgeBaseIds(),
+                            modelTier,
+                            runId,
+                            index + 1
+                    );
             answers.add(answer.content());
             evidence.addAll(answer.evidence());
             if (answer.sourceTitle() != null && !answer.sourceTitle().isBlank()) {

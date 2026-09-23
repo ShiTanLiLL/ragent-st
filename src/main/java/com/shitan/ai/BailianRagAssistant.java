@@ -15,6 +15,7 @@ public final class BailianRagAssistant {
     private final KnowledgeRepository knowledgeRepository;
     private final HybridRetrievalService hybridRetrievalService;
     private final ModelRoutingService modelRoutingService;
+    private final RagTraceService traceService;
     private final VectorSearch vectorSearch = new VectorSearch();
 
     /**
@@ -23,7 +24,7 @@ public final class BailianRagAssistant {
      * @param bailianClient 负责真实模型 HTTP 协议的客户端
      */
     public BailianRagAssistant(BailianClient bailianClient) {
-        this(bailianClient, null, null, null);
+        this(bailianClient, null, null, null, null);
     }
 
     /**
@@ -36,7 +37,7 @@ public final class BailianRagAssistant {
             BailianClient bailianClient,
             KnowledgeRepository knowledgeRepository
     ) {
-        this(bailianClient, knowledgeRepository, null, null);
+        this(bailianClient, knowledgeRepository, null, null, null);
     }
 
     /**
@@ -51,7 +52,7 @@ public final class BailianRagAssistant {
             KnowledgeRepository knowledgeRepository,
             HybridRetrievalService hybridRetrievalService
     ) {
-        this(bailianClient, knowledgeRepository, hybridRetrievalService, null);
+        this(bailianClient, knowledgeRepository, hybridRetrievalService, null, null);
     }
 
     /**
@@ -63,10 +64,24 @@ public final class BailianRagAssistant {
             HybridRetrievalService hybridRetrievalService,
             ModelRoutingService modelRoutingService
     ) {
+        this(bailianClient, knowledgeRepository, hybridRetrievalService, modelRoutingService, null);
+    }
+
+    /**
+     * 保存完整同步问答依赖；追踪服务只在带会话的第18课入口中使用。
+     */
+    public BailianRagAssistant(
+            BailianClient bailianClient,
+            KnowledgeRepository knowledgeRepository,
+            HybridRetrievalService hybridRetrievalService,
+            ModelRoutingService modelRoutingService,
+            RagTraceService traceService
+    ) {
         this.bailianClient = bailianClient;
         this.knowledgeRepository = knowledgeRepository;
         this.hybridRetrievalService = hybridRetrievalService;
         this.modelRoutingService = modelRoutingService;
+        this.traceService = traceService;
     }
 
     /**
@@ -174,20 +189,60 @@ public final class BailianRagAssistant {
             List<String> knowledgeBaseIds,
             ModelTier modelTier
     ) throws IOException, InterruptedException {
+        try {
+            return answerFromDatabase(question, knowledgeBaseIds, modelTier, null, 0);
+        } catch (IOException | InterruptedException exception) {
+            throw exception;
+        } catch (RuntimeException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw new IOException("问答流程失败", exception);
+        }
+    }
+
+    /**
+     * 为一个子问题分别记录检索和生成节点；runId 由最外层会话问答创建。
+     */
+    public KnowledgeAnswer answerFromDatabase(
+            String question,
+            List<String> knowledgeBaseIds,
+            ModelTier modelTier,
+            String runId,
+            int subQuestionNumber
+    ) throws Exception {
         if (hybridRetrievalService != null) {
-            List<RetrievedEvidence> evidence = hybridRetrievalService.retrieve(
-                    question,
-                    knowledgeBaseIds
-            );
+            List<RetrievedEvidence> evidence = runId == null || traceService == null
+                    ? hybridRetrievalService.retrieve(question, knowledgeBaseIds)
+                    : traceService.recordNode(
+                            runId,
+                            "retrieve_" + subQuestionNumber,
+                            "question=" + question + ", scope=" + knowledgeBaseIds,
+                            () -> hybridRetrievalService.retrieve(question, knowledgeBaseIds),
+                            result -> "evidence=" + result.size() + ", titles="
+                                    + result.stream().map(RetrievedEvidence::title).toList()
+                    );
             if (evidence.isEmpty()) {
                 return new KnowledgeAnswer("暂时没有找到足够相关的知识。", null, List.of());
             }
             List<KnowledgeEntry> answerEvidence = evidence.stream()
                     .map(RetrievedEvidence::toKnowledgeEntry)
                     .toList();
-            String generatedAnswer = modelRoutingService == null
-                    ? bailianClient.generateAnswer(question, answerEvidence)
-                    : modelRoutingService.generate(modelTier, question, answerEvidence);
+            String generatedAnswer;
+            if (runId == null || traceService == null) {
+                generatedAnswer = modelRoutingService == null
+                        ? bailianClient.generateAnswer(question, answerEvidence)
+                        : modelRoutingService.generate(modelTier, question, answerEvidence);
+            } else {
+                generatedAnswer = traceService.recordNode(
+                        runId,
+                        "generate_" + subQuestionNumber,
+                        "modelTier=" + modelTier.name().toLowerCase() + ", evidence=" + evidence.size(),
+                        () -> modelRoutingService == null
+                                ? bailianClient.generateAnswer(question, answerEvidence)
+                                : modelRoutingService.generate(modelTier, question, answerEvidence),
+                        answer -> "answerChars=" + answer.length()
+                );
+            }
             return new KnowledgeAnswer(
                     generatedAnswer,
                     evidence.get(0).title(),

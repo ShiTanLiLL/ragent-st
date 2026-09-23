@@ -6,6 +6,7 @@ import java.util.List;
  * 一条候选证据在多路召回、RRF 和精排之间流动时携带的数据。
  *
  * @param id             Chunk 唯一编号，用于跨通道去重
+ * @param documentId     Chunk 所属文档编号，用于把多个片段归并为一个稳定来源
  * @param title          证据标题
  * @param content        证据正文
  * @param channels       召回到它的通道名称
@@ -16,6 +17,7 @@ import java.util.List;
  */
 public record RetrievedEvidence(
         String id,
+        String documentId,
         String title,
         String content,
         List<String> channels,
@@ -37,12 +39,13 @@ public record RetrievedEvidence(
      */
     public static RetrievedEvidence fromVector(
             String id,
+            String documentId,
             String title,
             String content,
             double vectorScore
     ) {
         return new RetrievedEvidence(
-                id, title, content, List.of("vector"), vectorScore, null, 0.0, null
+                id, documentId, title, content, List.of("vector"), vectorScore, null, 0.0, null
         );
     }
 
@@ -51,12 +54,13 @@ public record RetrievedEvidence(
      */
     public static RetrievedEvidence fromKeyword(
             String id,
+            String documentId,
             String title,
             String content,
             double keywordScore
     ) {
         return new RetrievedEvidence(
-                id, title, content, List.of("keyword"), null, keywordScore, 0.0, null
+                id, documentId, title, content, List.of("keyword"), null, keywordScore, 0.0, null
         );
     }
 
@@ -66,6 +70,7 @@ public record RetrievedEvidence(
     public RetrievedEvidence fusedWith(RetrievedEvidence other, List<String> mergedChannels, double score) {
         return new RetrievedEvidence(
                 id,
+                documentId,
                 title,
                 content,
                 mergedChannels,
@@ -81,7 +86,7 @@ public record RetrievedEvidence(
      */
     public RetrievedEvidence withRrfScore(double score) {
         return new RetrievedEvidence(
-                id, title, content, channels, vectorScore, keywordScore, score, rerankScore
+                id, documentId, title, content, channels, vectorScore, keywordScore, score, rerankScore
         );
     }
 
@@ -90,7 +95,7 @@ public record RetrievedEvidence(
      */
     public RetrievedEvidence withRerankScore(double score) {
         return new RetrievedEvidence(
-                id, title, content, channels, vectorScore, keywordScore, rrfScore, score
+                id, documentId, title, content, channels, vectorScore, keywordScore, rrfScore, score
         );
     }
 

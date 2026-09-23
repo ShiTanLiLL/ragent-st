@@ -252,7 +252,7 @@ public class KnowledgeRepository {
         List<Object> scopeArguments = new ArrayList<>();
         String scopeSql = appendScope(knowledgeBaseIds, scopeArguments);
         return jdbcTemplate.query("""
-                SELECT c.id, c.title, c.content,
+                SELECT c.id, c.document_id, c.title, c.content,
                        1 - (c.embedding <=> CAST(? AS vector)) AS vector_score
                 FROM knowledge_chunk c
                 JOIN knowledge_document d ON d.id = c.document_id
@@ -263,6 +263,7 @@ public class KnowledgeRepository {
                 """,
                 (resultSet, rowNumber) -> RetrievedEvidence.fromVector(
                         resultSet.getString("id"),
+                        resultSet.getString("document_id"),
                         resultSet.getString("title"),
                         resultSet.getString("content"),
                         resultSet.getDouble("vector_score")
@@ -288,13 +289,14 @@ public class KnowledgeRepository {
         List<Object> arguments = new ArrayList<>();
         String scopeSql = appendScope(knowledgeBaseIds, arguments);
         List<KeywordRow> rows = jdbcTemplate.query("""
-                SELECT c.id, c.title, c.content, c.embedding_text
+                SELECT c.id, c.document_id, c.title, c.content, c.embedding_text
                 FROM knowledge_chunk c
                 JOIN knowledge_document d ON d.id = c.document_id
                 WHERE d.status = 'success'
                 """ + scopeSql,
                 (resultSet, rowNumber) -> new KeywordRow(
                         resultSet.getString("id"),
+                        resultSet.getString("document_id"),
                         resultSet.getString("title"),
                         resultSet.getString("content"),
                         resultSet.getString("embedding_text")
@@ -303,7 +305,7 @@ public class KnowledgeRepository {
         );
         return rows.stream()
                 .map(row -> RetrievedEvidence.fromKeyword(
-                        row.id(), row.title(), row.content(), keywordScore(row, terms)
+                        row.id(), row.documentId(), row.title(), row.content(), keywordScore(row, terms)
                 ))
                 .filter(candidate -> candidate.keywordScore() > 0)
                 .sorted(Comparator.comparingDouble(RetrievedEvidence::keywordScore).reversed())
@@ -366,7 +368,13 @@ public class KnowledgeRepository {
         return count;
     }
 
-    private record KeywordRow(String id, String title, String content, String embeddingText) {
+    private record KeywordRow(
+            String id,
+            String documentId,
+            String title,
+            String content,
+            String embeddingText
+    ) {
     }
 
     /**
